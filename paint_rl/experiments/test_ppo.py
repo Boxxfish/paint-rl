@@ -17,10 +17,10 @@ from gymnasium.envs.classic_control.cartpole import CartPoleEnv
 from torch.distributions import Categorical
 from tqdm import tqdm
 
-from rl_template.algorithms.ppo import train_ppo
-from rl_template.algorithms.rollout_buffer import RolloutBuffer
-from rl_template.conf import entity
-from rl_template.utils import init_orthogonal
+from paint_rl.algorithms.ppo import train_ppo
+from paint_rl.algorithms.rollout_buffer import RolloutBuffer
+from paint_rl.conf import entity
+from paint_rl.utils import init_orthogonal
 
 _: Any
 

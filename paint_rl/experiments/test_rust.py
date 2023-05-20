@@ -14,11 +14,11 @@ from gymnasium.vector import SyncVectorEnv
 from torch.distributions import Categorical
 from tqdm import tqdm
 
-from rl_template.algorithms.ppo import train_ppo
-from rl_template.algorithms.rollout_buffer import RolloutBuffer
-from rl_template.conf import entity
-from rl_template.utils import init_orthogonal
-from rl_template_rust import CartpoleEnv  # type: ignore
+from paint_rl.algorithms.ppo import train_ppo
+from paint_rl.algorithms.rollout_buffer import RolloutBuffer
+from paint_rl.conf import entity
+from paint_rl.utils import init_orthogonal
+from paint_rl_rust import CartpoleEnv  # type: ignore
 
 _: Any
 
