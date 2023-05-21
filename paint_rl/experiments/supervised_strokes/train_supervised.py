@@ -1,15 +1,15 @@
 """
 Trains a model on the supervised stroke task.
 """
-from torch import nn
-import torch
-from tqdm import tqdm
-import numpy as np
-from PIL import Image  # type: ignore
-from sklearn.model_selection import train_test_split  # type: ignore
 import json
 
+import numpy as np
+import torch
 import wandb
+from PIL import Image  # type: ignore
+from sklearn.model_selection import train_test_split  # type: ignore
+from torch import nn
+from tqdm import tqdm
 
 from paint_rl.experiments.supervised_strokes.gen_supervised import (
     IMG_SIZE,
@@ -18,7 +18,7 @@ from paint_rl.experiments.supervised_strokes.gen_supervised import (
 )
 
 
-class StrokeNet(nn.Module):
+class SharedNet(nn.Module):
     def __init__(self, size: int):
         nn.Module.__init__(self)
         self.net = nn.Sequential(
@@ -26,17 +26,14 @@ class StrokeNet(nn.Module):
             nn.Conv2d(3 + 2, 12, 3),
             nn.MaxPool2d(4),
             nn.ReLU(),
-            nn.Conv2d(12, 32, 3),
+            nn.Conv2d(12, 16, 3),
             nn.MaxPool2d(4),
             nn.ReLU(),
-            nn.Conv2d(32, 64, 3),
-            # nn.MaxPool2d(2),
+            nn.Conv2d(16, 32, 3),
             nn.ReLU(),
-            nn.Conv2d(64, 128, 3),
-            # nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, 3),
             nn.ReLU(),
         )
-        self.ff = nn.Sequential(nn.Linear(128, 4))
         # Pos encoding
         w = torch.arange(0, size).unsqueeze(0).repeat([size, 1])
         h = torch.arange(0, size).unsqueeze(0).repeat([size, 1]).T
@@ -50,6 +47,17 @@ class StrokeNet(nn.Module):
         x = torch.cat([x, pos_encoding], dim=1)
         x = self.net(x)
         x = torch.max(torch.max(x, 3).values, 2).values
+        return x
+
+
+class StrokeNet(nn.Module):
+    def __init__(self, size: int):
+        nn.Module.__init__(self)
+        self.shared = SharedNet(size)
+        self.ff = nn.Sequential(nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, 4))
+
+    def forward(self, x):
+        x = self.shared(x)
         x = self.ff(x)
         return x
 
@@ -60,10 +68,10 @@ def main():
     ds_x = torch.zeros([NUM_IMAGES, 3, img_size, img_size], dtype=torch.int8)
     print("Loading data.")
     for i in tqdm(range(NUM_IMAGES)):
-        img = Image.open(f"supervised/{i}.png")
+        img = Image.open(f"temp/supervised/{i}.png")
         img_data = torch.swapaxes(torch.from_numpy(np.array(img)), 0, -1) / 255.0
         ds_x[i] = img_data
-    with open("supervised_paths.json", "r") as f:
+    with open("temp/supervised_paths.json", "r") as f:
         paths = json.load(f)
     ds_y = (
         torch.tensor(

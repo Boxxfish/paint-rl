@@ -1,16 +1,16 @@
 """
 Generates the dataset for the supervised setting.
 """
+import json
 import os
+import random
+import shutil
 from pathlib import Path
 from typing import List, Tuple
-from PIL import Image, ImageDraw  # type: ignore
-import random
-import json
-import shutil
+
 import bezier  # type: ignore
 import numpy as np
-
+from PIL import Image, ImageDraw  # type: ignore
 from tqdm import tqdm
 
 IMG_SIZE = 128
@@ -74,7 +74,7 @@ def gen_sample(img_size: int) -> Tuple[Image.Image, List[Tuple[int, int]]]:
 
 
 def main():
-    folder_name = "supervised"
+    folder_name = "temp/supervised"
     if Path(folder_name).exists():
         shutil.rmtree(folder_name)
     os.mkdir(folder_name)
@@ -83,7 +83,7 @@ def main():
         img, path = gen_sample(IMG_SIZE)
         paths.append(path)
         img.save(f"{folder_name}/{i}.png")
-    with open("supervised_paths.json", "w") as f:
+    with open("temp/supervised_paths.json", "w") as f:
         json.dump(paths, f)
 
 
