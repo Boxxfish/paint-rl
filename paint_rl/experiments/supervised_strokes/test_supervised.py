@@ -7,10 +7,7 @@ from matplotlib import pyplot as plt  # type: ignore
 from PIL import ImageDraw  # type: ignore
 
 from paint_rl.experiments.supervised_strokes.gen_supervised import (
-    IMG_SIZE,
-    gen_curve_points,
-    gen_sample,
-)
+    IMG_SIZE, gen_curve_points, gen_sample)
 from paint_rl.experiments.supervised_strokes.train_supervised import StrokeNet
 
 

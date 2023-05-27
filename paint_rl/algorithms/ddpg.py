@@ -50,19 +50,26 @@ def train_ddpg(
 
         # Perform gradient descent on Q network, reducing prediction error
         q_opt.zero_grad()
-        targets = rewards + discount * (1.0 - dones) * q_net_target(states, p_net_target(states).detach()).squeeze()
-        q_loss = torch.mean((q_net(prev_states, actions).squeeze() - targets)**2, 0).squeeze(0)
+        targets = (
+            rewards
+            + discount
+            * (1.0 - dones)
+            * q_net_target(states, p_net_target(states).detach()).squeeze()
+        )
+        q_loss = torch.mean(
+            (q_net(prev_states, actions).squeeze() - targets) ** 2, 0
+        ).squeeze(0)
         q_loss.backward()
         q_opt.step()
         total_q_loss += q_loss.item()
-            
+
         # Perform gradient ascent on policy network, increasing action return
         p_opt.zero_grad()
         p_loss = -torch.mean(q_net(prev_states, p_net(prev_states)), 0).squeeze(0)
         p_loss.backward()
         p_opt.step()
         total_p_loss += p_loss.item()
-            
+
         # Update target networks
         polyak_avg(q_net, q_net_target, polyak)
         polyak_avg(p_net, p_net_target, polyak)

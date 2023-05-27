@@ -17,9 +17,9 @@ import torch.nn as nn
 import wandb
 from gymnasium.envs.classic_control.pendulum import PendulumEnv
 from tqdm import tqdm
-from paint_rl.algorithms.ddpg import train_ddpg
 
 import paint_rl.conf
+from paint_rl.algorithms.ddpg import train_ddpg
 from paint_rl.algorithms.replay_buffer import ReplayBuffer
 from paint_rl.utils import init_orthogonal, polyak_avg
 

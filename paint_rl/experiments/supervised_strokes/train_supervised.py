@@ -11,11 +11,9 @@ from sklearn.model_selection import train_test_split  # type: ignore
 from torch import nn
 from tqdm import tqdm
 
-from paint_rl.experiments.supervised_strokes.gen_supervised import (
-    IMG_SIZE,
-    NUM_IMAGES,
-    gen_sample,
-)
+from paint_rl.experiments.supervised_strokes.gen_supervised import (IMG_SIZE,
+                                                                    NUM_IMAGES,
+                                                                    gen_sample)
 
 
 class SharedNet(nn.Module):
