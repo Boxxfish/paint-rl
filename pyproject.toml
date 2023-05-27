@@ -12,7 +12,7 @@ torch = "2.0.0"
 isort = "^5.12.0"
 tqdm = "^4.65.0"
 wandb = "^0.15.3"
-gymnasium = "^0.28.1"
+gymnasium = {extras = ["classic-control"], version = "^0.28.1"}
 envpool = "^0.8.2"
 types-tqdm = "^4.65.0.1"
 maturin = "^0.15.2"
