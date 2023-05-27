@@ -15,11 +15,12 @@ class ReplayBuffer:
         self,
         state_shape: torch.Size,
         action_masks_shape: torch.Size,
+        action_dtype: torch.dtype,
         capacity: int,
     ):
         k = torch.float
         state_shape = torch.Size([capacity] + list(state_shape))
-        action_shape = torch.Size([capacity])
+        action_shape = torch.Size([capacity] + list(action_masks_shape))
         action_masks_shape = torch.Size([capacity] + list(action_masks_shape))
         self.capacity = capacity
         self.next = 0
@@ -29,7 +30,7 @@ class ReplayBuffer:
             state_shape, dtype=k, device=d, requires_grad=False
         )
         self.actions = torch.zeros(
-            action_shape, dtype=torch.int64, device=d, requires_grad=False
+            action_shape, dtype=action_dtype, device=d, requires_grad=False
         )
         self.rewards = torch.zeros([capacity], dtype=k, device=d, requires_grad=False)
         # Technically this is the "terminated" flag

@@ -105,6 +105,7 @@ q_opt = torch.optim.Adam(q_net.parameters(), lr=q_lr)
 buffer = ReplayBuffer(
     torch.Size(obs_space.shape),
     torch.Size((int(act_space.n),)),
+    torch.int64,
     buffer_size,
 )
 
