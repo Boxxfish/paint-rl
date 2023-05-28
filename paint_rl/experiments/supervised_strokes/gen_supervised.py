@@ -55,20 +55,20 @@ def gen_sample(img_size: int) -> Tuple[Image.Image, List[Tuple[int, int]]]:
     next_point = rand_point(img_size)
     path = [last_point, mid_point, next_point]
     points = gen_curve_points(last_point, mid_point, next_point)
-    draw.line(points, TARGET_COLOR)
+    draw.line(points, TARGET_COLOR, width=4)
     lines_after = [next_point] + [rand_point(img_size) for _ in range(num_after)]
     for i in range(len(lines_before) - 1):
         prev_point = lines_before[i]
         next_point = lines_before[i + 1]
         mid = rand_point(img_size)
         points = gen_curve_points(prev_point, mid, next_point)
-        draw.line(points, CANVAS_TARGET_COLOR)
+        draw.line(points, CANVAS_TARGET_COLOR, width=4)
     for i in range(len(lines_after) - 1):
         prev_point = lines_after[i]
         next_point = lines_after[i + 1]
         mid = rand_point(img_size)
         points = gen_curve_points(prev_point, mid, next_point)
-        draw.line(points, TARGET_COLOR)
+        draw.line(points, TARGET_COLOR, width=4)
     draw.point((last_point[0], last_point[1]), PEN_POS_COLOR)
     return (img, path)
 
