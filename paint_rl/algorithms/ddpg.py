@@ -55,7 +55,7 @@ def train_ddpg(
             + discount
             * (1.0 - dones)
             * q_net_target(states, p_net_target(states).detach()).squeeze()
-        )
+        ).detach()
         q_loss = torch.mean(
             (q_net(prev_states, actions).squeeze() - targets) ** 2, 0
         ).squeeze(0)

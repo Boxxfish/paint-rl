@@ -1,9 +1,8 @@
 """
-Experiment for checking that DDPG works.
+Experiment for checking that TD3 works.
 
-The Deep Deterministic Policy Gradient (DDPG) algorithm is a popular offline
-deep reinforcement learning algorithm for continuous spaces. It's intuitive to
-understand, and it gets reliable results, though it can take longer to run.
+The Twin Delayed DDPG (TD3) algorithm is a modification of DDPG, granting large
+improvements with small changes. In general, this should be preferred over DDPG.
 """
 import copy
 import random
@@ -19,9 +18,9 @@ from gymnasium.envs.classic_control.pendulum import PendulumEnv
 from tqdm import tqdm
 
 import paint_rl.conf
-from paint_rl.algorithms.ddpg import train_ddpg
+from paint_rl.algorithms.td3 import train_td3
 from paint_rl.algorithms.replay_buffer import ReplayBuffer
-from paint_rl.utils import init_orthogonal, polyak_avg
+from paint_rl.utils import init_orthogonal
 
 _: Any
 
@@ -33,13 +32,15 @@ train_iters = 100  # Number of passes over the samples collected.
 train_batch_size = 128  # Minibatch size while training models.
 discount = 0.99  # Discount factor applied to rewards.
 q_epsilon = 0.1  # Amount of noise added to actions during training.
-eval_steps = 2  # Number of eval runs to average over.
+eval_steps = 1  # Number of eval runs to average over.
 max_eval_steps = 300  # Max number of steps to take during each eval run.
 q_lr = 0.001  # Learning rate of the q net.
 p_lr = 0.001  # Learning rate of the p net.
 polyak = 0.005  # Polyak averaging value.
+noise_scale = 0.2  # Target smoothing noise scale.
+noise_clip = 0.5  # Target smoothing clip value.
 warmup_steps = 100  # For the first n number of steps, we will only sample randomly.
-buffer_size = 10000  # Number of elements that can be stored in the buffer.
+buffer_size = 100000  # Number of elements that can be stored in the buffer.
 device = torch.device("cuda")
 
 wandb.init(
@@ -106,13 +107,13 @@ class PNet(nn.Module):
         nn.Module.__init__(self)
         flat_obs_dim = reduce(lambda e1, e2: e1 * e2, obs_shape, 1)
         self.net = nn.Sequential(
-            nn.Linear(flat_obs_dim, 64),
+            nn.Linear(flat_obs_dim, 32),
             nn.ReLU(),
-            nn.Linear(64, 64),
+            nn.Linear(32, 32),
             nn.ReLU(),
-            nn.Linear(64, 64),
+            nn.Linear(32, 32),
             nn.ReLU(),
-            nn.Linear(64, act_count),
+            nn.Linear(32, act_count),
         )
         init_orthogonal(self)
 
@@ -127,10 +128,14 @@ test_env = PendulumEnv()
 # Initialize networks
 obs_space = env.observation_space
 act_space = env.action_space
-q_net = QNet(obs_space.shape, int(act_space.shape[0]))
-q_net_target = copy.deepcopy(q_net)
-q_net_target.to(device)
-q_opt = torch.optim.Adam(q_net.parameters(), lr=q_lr)
+q_net_1 = QNet(obs_space.shape, int(act_space.shape[0]))
+q_net_1_target = copy.deepcopy(q_net_1)
+q_net_1_target.to(device)
+q_1_opt = torch.optim.Adam(q_net_1.parameters(), lr=q_lr)
+q_net_2 = QNet(obs_space.shape, int(act_space.shape[0]))
+q_net_2_target = copy.deepcopy(q_net_2)
+q_net_2_target.to(device)
+q_2_opt = torch.optim.Adam(q_net_2.parameters(), lr=q_lr)
 p_net = PNet(obs_space.shape, int(act_space.shape[0]))
 p_net_target = copy.deepcopy(p_net)
 p_net_target.to(device)
@@ -187,10 +192,13 @@ for step in tqdm(range(iterations), position=0):
 
     # Train
     if buffer.filled:
-        total_q_loss, total_p_loss = train_ddpg(
-            q_net,
-            q_net_target,
-            q_opt,
+        total_q_loss, total_p_loss = train_td3(
+            q_net_1,
+            q_net_1_target,
+            q_1_opt,
+            q_net_2,
+            q_net_2_target,
+            q_2_opt,
             p_net,
             p_net_target,
             p_opt,
@@ -200,6 +208,10 @@ for step in tqdm(range(iterations), position=0):
             train_batch_size,
             discount,
             polyak,
+            noise_clip,
+            noise_scale,
+            act_low,
+            act_high
         )
 
         # Evaluate the network's performance after this training iteration.
@@ -213,8 +225,8 @@ for step in tqdm(range(iterations), position=0):
                 steps_taken = 0
                 score = 0
                 for _ in range(max_eval_steps):
-                    action = p_net(eval_obs.unsqueeze(0)).squeeze(1)
-                    pred_reward_total += q_net(
+                    action = torch.clamp(p_net(eval_obs.unsqueeze(0)).squeeze(1), act_low, act_high)
+                    pred_reward_total += q_net_1(
                         eval_obs.unsqueeze(0), action.unsqueeze(0)
                     ).item()
                     action = action.numpy()
