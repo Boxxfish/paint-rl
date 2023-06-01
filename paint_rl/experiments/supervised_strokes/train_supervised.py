@@ -11,9 +11,12 @@ from sklearn.model_selection import train_test_split  # type: ignore
 from torch import nn
 from tqdm import tqdm
 
-from paint_rl.experiments.supervised_strokes.gen_supervised import (IMG_SIZE,
-                                                                    NUM_IMAGES,
-                                                                    gen_sample)
+from paint_rl.experiments.supervised_strokes.gen_supervised import (
+    IMG_SIZE,
+    NUM_IMAGES,
+    gen_sample,
+)
+from paint_rl.utils import init_orthogonal
 
 
 class SharedNet(nn.Module):
@@ -21,22 +24,20 @@ class SharedNet(nn.Module):
         nn.Module.__init__(self)
         self.net = nn.Sequential(
             # Input is num channels + num pos elements
-            nn.Conv2d(3 + 2, 12, 3),
-            nn.MaxPool2d(4),
-            nn.ReLU(),
-            nn.Conv2d(12, 16, 3),
-            nn.MaxPool2d(4),
+            nn.Conv2d(3 + 2, 16, 3),
+            nn.MaxPool2d(2),
             nn.ReLU(),
             nn.Conv2d(16, 32, 3),
+            nn.MaxPool2d(2),
             nn.ReLU(),
-            nn.Conv2d(32, 64, 3),
+            nn.Conv2d(32, 32, 3),
             nn.ReLU(),
         )
         # Pos encoding
         w = torch.arange(0, size).unsqueeze(0).repeat([size, 1])
         h = torch.arange(0, size).unsqueeze(0).repeat([size, 1]).T
         self.pos = nn.Parameter(
-            torch.stack([w, h]).unsqueeze(0) / (size / 2.0) - 1.0, requires_grad=False
+            torch.stack([w, h]).unsqueeze(0) / size, requires_grad=False
         )
 
     def forward(self, x):
@@ -52,7 +53,15 @@ class StrokeNet(nn.Module):
     def __init__(self, size: int):
         nn.Module.__init__(self)
         self.shared = SharedNet(size)
-        self.ff = nn.Sequential(nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, 4))
+        self.ff = nn.Sequential(
+            nn.Linear(32, 32),
+            nn.ReLU(),
+            nn.Linear(32, 32),
+            nn.ReLU(),
+            nn.Linear(32, 4),
+            nn.Sigmoid(),
+        )
+        init_orthogonal(self)
 
     def forward(self, x):
         x = self.shared(x)
@@ -75,8 +84,7 @@ def main():
         torch.tensor(
             [[item[1][0], item[1][1], item[2][0], item[2][1]] for item in paths]
         )
-        / (img_size / 2)
-        - 1.0
+        / img_size
     )
     del paths
     train_x, valid_x, train_y, valid_y = train_test_split(ds_x, ds_y, train_size=0.8)
@@ -93,7 +101,7 @@ def main():
 
     # Train model
     net = StrokeNet(img_size).cuda().train()
-    opt = torch.optim.Adam(net.parameters(), lr=0.001)
+    opt = torch.optim.Adam(net.parameters(), lr=0.0001)
     batch_size = 512
     train_x = train_x.float().cuda()
     train_y = train_y.float().cuda()
@@ -147,8 +155,7 @@ def main():
                             for item in paths
                         ]
                     )
-                    / (img_size / 2)
-                    - 1.0
+                    / img_size
                 )
                 .float()
                 .cuda()

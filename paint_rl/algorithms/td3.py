@@ -30,6 +30,7 @@ def train_td3(
     noise_scale: float,
     act_low: torch.Tensor,
     act_high: torch.Tensor,
+    update_policy_every: int = 2,
 ) -> Tuple[float, float]:
     """
     Performs the TD3 training loop.
@@ -74,17 +75,18 @@ def train_td3(
         q_1_loss = torch.mean(
             (q_net_1(prev_states, actions).squeeze() - targets) ** 2, 0
         ).squeeze(0)
+        q_1_loss.backward()
+        q_1_opt.step()
+        total_q_loss += q_1_loss.item()
+
         q_2_loss = torch.mean(
             (q_net_2(prev_states, actions).squeeze() - targets) ** 2, 0
         ).squeeze(0)
-        q_1_loss.backward()
         q_2_loss.backward()
-        q_1_opt.step()
         q_2_opt.step()
-        total_q_loss += q_1_loss.item()
         total_q_loss += q_2_loss.item()
 
-        if (step + 1) % 2 == 0:
+        if (step + 1) % update_policy_every == 0:
             # Perform gradient ascent on policy network, increasing action return
             p_opt.zero_grad()
             p_loss = -torch.mean(q_net_1(prev_states, p_net(prev_states)), 0).squeeze(0)
@@ -92,10 +94,12 @@ def train_td3(
             p_opt.step()
             total_p_loss += p_loss.item()
 
-            # Update target networks
-            polyak_avg(q_net_1, q_net_1_target, polyak)
-            polyak_avg(q_net_2, q_net_2_target, polyak)
+            # Update P network
             polyak_avg(p_net, p_net_target, polyak)
+
+        # Update Q networks
+        polyak_avg(q_net_1, q_net_1_target, polyak)
+        polyak_avg(q_net_2, q_net_2_target, polyak)
 
     if device.type != "cpu":
         q_net_1.cpu()
