@@ -1,5 +1,5 @@
 """
-Experiment for using RL to train a pretrained stroke model.
+Experiment for using RL to train a pretrained stroke model with TD3.
 """
 import copy
 import random

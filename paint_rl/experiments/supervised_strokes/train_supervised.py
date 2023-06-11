@@ -23,14 +23,15 @@ class SharedNet(nn.Module):
     def __init__(self, size: int):
         nn.Module.__init__(self)
         self.net = nn.Sequential(
-            # Input is num channels + num pos elements
-            nn.Conv2d(3 + 2, 16, 3),
-            nn.MaxPool2d(2),
+            nn.Conv2d(3 + 2, 16, 5, stride=2, padding=2),
             nn.ReLU(),
-            nn.Conv2d(16, 32, 3),
-            nn.MaxPool2d(2),
+            nn.Conv2d(16, 32, 5, padding=2),
             nn.ReLU(),
-            nn.Conv2d(32, 32, 3),
+            nn.Conv2d(32, 64, 5, padding=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 1),
             nn.ReLU(),
         )
         # Pos encoding
@@ -42,8 +43,8 @@ class SharedNet(nn.Module):
 
     def forward(self, x):
         batch_size = x.shape[0]
-        pos_encoding = self.pos.repeat([batch_size, 1, 1, 1])
-        x = torch.cat([x, pos_encoding], dim=1)
+        pos_enc = self.pos.repeat([batch_size, 1, 1, 1])
+        x = torch.cat([x, pos_enc], dim=1)
         x = self.net(x)
         x = torch.max(torch.max(x, 3).values, 2).values
         return x
@@ -54,11 +55,9 @@ class StrokeNet(nn.Module):
         nn.Module.__init__(self)
         self.shared = SharedNet(size)
         self.ff = nn.Sequential(
-            nn.Linear(32, 32),
+            nn.Linear(64, 64),
             nn.ReLU(),
-            nn.Linear(32, 32),
-            nn.ReLU(),
-            nn.Linear(32, 4),
+            nn.Linear(64, 4),
             nn.Sigmoid(),
         )
         init_orthogonal(self)
@@ -72,7 +71,7 @@ class StrokeNet(nn.Module):
 def main():
     # Load dataset
     img_size = IMG_SIZE
-    ds_x = torch.zeros([NUM_IMAGES, 3, img_size, img_size], dtype=torch.int8)
+    ds_x = torch.zeros([NUM_IMAGES, 3, img_size, img_size])
     print("Loading data.")
     for i in tqdm(range(NUM_IMAGES)):
         img = Image.open(f"temp/supervised/{i}.png")
@@ -133,6 +132,7 @@ def main():
 
         # Generate new data
         if (j + 1) % 30 == 0:
+            train_size = batch_size * 4
             samples = [gen_sample(IMG_SIZE) for _ in range(train_size)]
             imgs = [x[0] for x in samples]
             paths = [x[1] for x in samples]
@@ -162,7 +162,7 @@ def main():
             )
 
         # Save
-        if (j + 1) % 20 == 0:
+        if (j + 1) % 30 == 0:
             torch.save(net.state_dict(), "temp/stroke_net.pt")
 
 

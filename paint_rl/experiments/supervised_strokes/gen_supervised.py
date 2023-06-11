@@ -77,8 +77,9 @@ def gen_sample(img_size: int) -> Tuple[Image.Image, List[Tuple[int, int]]]:
         mid = rand_point(img_size)
         points = gen_curve_points(prev_point, mid, next_point)
         r_draw.line(points, 1, width=1)
-    pos_layer = np.zeros([img_size, img_size])
-    pos_layer[last_point[1]][last_point[0]] = 1
+    pos_layer_x = np.abs(np.arange(0 - last_point[0], img_size - last_point[0]))[np.newaxis, ...].repeat(img_size, 0) / img_size
+    pos_layer_y = np.abs(np.arange(0 - last_point[1], img_size - last_point[1]))[np.newaxis, ...].repeat(img_size, 0).T / img_size
+    pos_layer = np.sqrt(pos_layer_x**2 + pos_layer_y**2).clip(0, 1)
     final = np.stack([np.array(c_img), np.array(r_img), pos_layer]).swapaxes(0, 2).swapaxes(0, 1)
     return (Image.fromarray(np.uint8(final * 255)), path)
 

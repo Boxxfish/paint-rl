@@ -31,6 +31,7 @@ class StrokeEnv(gym.Env):
         self.canvas = np.zeros([0, img_size, img_size])
         self.last_pos = (0, 0)
         self.num_strokes = 0
+        self.counter = 0
         self.render_mode = render_mode
         self.max_diff = img_size**2
         self.canvas_img = Image.new("1", (self.img_size, self.img_size))
@@ -46,7 +47,7 @@ class StrokeEnv(gym.Env):
     def step(
         self, action: np.ndarray
     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-        action = np.clip((action.squeeze() + 1.0) * (self.img_size / 2), 0, self.img_size - 1)
+        action = np.clip(action.squeeze() * self.img_size, 0, self.img_size - 1)
         mid_point = (int(action[0]), int(action[1]))
         end_point = (int(action[2]), int(action[3]))
         points = gen_curve_points(self.last_pos, mid_point, end_point)
@@ -59,22 +60,24 @@ class StrokeEnv(gym.Env):
         self.last_diff = diff
 
         done = diff < 0.001
+        self.counter += 1
+        trunc = self.counter == self.num_strokes
 
         pixels_moved = abs(self.last_pos[0] - end_point[0]) + abs(self.last_pos[1] - end_point[1])
-        if pixels_moved <= 5:
+        if pixels_moved <= 4:
             reward -= 0.1
         self.last_pos = end_point
 
-        pos_channel = np.zeros([self.img_size, self.img_size])
-        pos_channel[self.last_pos[0]][self.last_pos[1]] = 1
+        pos_channel = self.gen_pos_channel(self.last_pos[0], self.last_pos[1], self.img_size)
         obs = np.stack([self.canvas, self.ref, pos_channel])
 
-        return obs, reward, done, False, {}
+        return obs, reward, done, trunc, {}
 
     def reset(self, **kwargs) -> tuple[np.ndarray, dict[str, Any]]:
         img = Image.new("1", (self.img_size, self.img_size))
         draw = ImageDraw.Draw(img)
         self.num_strokes = random.randrange(1, 4)
+        self.counter = 0
         self.last_pos = rand_point(self.img_size)
         curr_pos = self.last_pos
         self.correct_moves = []
@@ -86,11 +89,10 @@ class StrokeEnv(gym.Env):
             draw.line(points, 1, 1)
             curr_pos = end_point
         self.ref = np.array(img).swapaxes(0, 1)
-        self.ref_filter = (self.ref + gaussian_filter(np.float32(self.ref), sigma=7) * 4).clip(0, 1)
+        self.ref_filter = (self.ref + gaussian_filter(np.float32(self.ref), sigma=16) * 4).clip(0, 1)
 
         self.canvas = np.zeros([self.img_size, self.img_size])
-        pos_channel = np.zeros([self.img_size, self.img_size])
-        pos_channel[self.last_pos[0]][self.last_pos[1]] = 1
+        pos_channel = self.gen_pos_channel(self.last_pos[0], self.last_pos[1], self.img_size)
         obs = np.stack([self.canvas, self.ref, pos_channel])
         self.canvas_draw.rectangle((0, 0, self.img_size, self.img_size), 0)
         self.last_diff = (np.abs(self.canvas - self.ref_filter)).sum() / self.max_diff
@@ -105,3 +107,8 @@ class StrokeEnv(gym.Env):
             pygame.transform.scale(img_surf, (self.img_size * SCREEN_SCALE, self.img_size * SCREEN_SCALE), self.screen)
             pygame.display.flip()
             self.clock.tick(20)
+
+    def gen_pos_channel(self, x: int, y: int, img_size: int) -> np.ndarray:
+        pos_layer_x = np.abs(np.arange(0 - x, img_size - x))[np.newaxis, ...].repeat(img_size, 0) / img_size
+        pos_layer_y = np.abs(np.arange(0 - y, img_size - y))[np.newaxis, ...].repeat(img_size, 0).T / img_size
+        return np.sqrt(pos_layer_x**2 + pos_layer_y**2)
