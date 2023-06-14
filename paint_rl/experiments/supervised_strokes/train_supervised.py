@@ -14,7 +14,7 @@ from tqdm import tqdm
 from paint_rl.experiments.supervised_strokes.gen_supervised import (
     IMG_SIZE,
     NUM_IMAGES,
-    gen_sample,
+    gen_shape,
 )
 from paint_rl.utils import init_orthogonal
 
@@ -133,7 +133,7 @@ def main():
         # Generate new data
         if (j + 1) % 30 == 0:
             train_size = batch_size * 4
-            samples = [gen_sample(IMG_SIZE) for _ in range(train_size)]
+            samples = [gen_shape(IMG_SIZE) for _ in range(train_size)]
             imgs = [x[0] for x in samples]
             paths = [x[1] for x in samples]
             del samples
