@@ -1,5 +1,5 @@
 import random
-from typing import Any, Optional
+from typing import Any, List, Optional
 import gymnasium as gym
 import numpy as np
 from PIL import Image, ImageDraw  # type: ignore
@@ -21,9 +21,9 @@ class StrokeEnv(gym.Env):
     An environment where the agent must copy the given stroke.
     """
 
-    def __init__(self, img_size: int, render_mode: Optional[str] = None) -> None:
+    def __init__(self, img_size: int, ref_imgs: Optional[List[np.ndarray]] = None, stroke_imgs: Optional[List[np.ndarray]] = None, render_mode: Optional[str] = None) -> None:
         super().__init__()
-        self.observation_space = gym.spaces.Box(0.0, 1.0, [3, img_size, img_size])
+        self.observation_space = gym.spaces.Box(0.0, 1.0, [5, img_size, img_size])
         self.action_space = gym.spaces.Box(
             -1.0,
             1.0,
@@ -32,6 +32,8 @@ class StrokeEnv(gym.Env):
             ],
         )
         self.img_size = img_size
+        self.ref_imgs = ref_imgs
+        self.stroke_imgs = stroke_imgs
         self.ref = np.zeros([0, img_size, img_size])
         self.ref_cmp = np.zeros([0, img_size, img_size])
         self.canvas = np.zeros([0, img_size, img_size])
@@ -80,41 +82,61 @@ class StrokeEnv(gym.Env):
         pos_channel = self.gen_pos_channel(
             self.last_pos[0], self.last_pos[1], self.img_size
         )
-        obs = np.stack([self.canvas, self.ref, pos_channel])
+        obs = np.concatenate([np.stack([self.canvas, pos_channel]), self.ref], 0)
 
         return obs, reward, done, trunc, {}
 
     def reset(self, **kwargs) -> tuple[np.ndarray, dict[str, Any]]:
-        img = Image.new("1", (self.img_size, self.img_size))
-        draw = ImageDraw.Draw(img)
-        self.num_strokes = random.randrange(1, 4)
         self.counter = 0
-        self.last_pos = rand_point(
-            MIN_DIST, MAX_DIST, prev=(self.img_size // 2, self.img_size // 2)
-        )
-        curr_pos = self.last_pos
-        self.correct_moves = []
-        for _ in range(self.num_strokes):
-            mid_point = rand_point(
+        if self.ref_imgs:
+            index = random.randrange(0, len(self.ref_imgs))
+            img = self.ref_imgs[index]
+            self.num_strokes = 10
+            self.last_pos = rand_point(
                 MIN_DIST, MAX_DIST, prev=(self.img_size // 2, self.img_size // 2)
             )
-            end_point = rand_point(
+            if self.stroke_imgs:
+                self.ref = img
+                stroke_img = self.stroke_imgs[index]
+                self.ref_filter = (
+                    stroke_img + gaussian_filter(np.float32(stroke_img), sigma=4) * 2
+                ).clip(0, 1)
+            else:
+                self.ref = img.swapaxes(0, 1)
+                stroke_img = self.ref
+                self.ref_filter = (
+                    self.ref + gaussian_filter(np.float32(self.ref), sigma=4) * 2
+                ).clip(0, 1)
+        else:
+            img = Image.new("1", (self.img_size, self.img_size))
+            draw = ImageDraw.Draw(img)
+            self.num_strokes = random.randrange(1, 4)
+            self.last_pos = rand_point(
                 MIN_DIST, MAX_DIST, prev=(self.img_size // 2, self.img_size // 2)
             )
-            self.correct_moves.append((mid_point, end_point))
-            points = gen_curve_points(curr_pos, mid_point, end_point)
-            draw.line(points, 1, 1)
-            curr_pos = end_point
-        self.ref = np.array(img).swapaxes(0, 1)
-        self.ref_filter = (
-            self.ref + gaussian_filter(np.float32(self.ref), sigma=4) * 2
-        ).clip(0, 1)
+            curr_pos = self.last_pos
+            self.correct_moves = []
+            for _ in range(self.num_strokes):
+                mid_point = rand_point(
+                    MIN_DIST, MAX_DIST, prev=(self.img_size // 2, self.img_size // 2)
+                )
+                end_point = rand_point(
+                    MIN_DIST, MAX_DIST, prev=(self.img_size // 2, self.img_size // 2)
+                )
+                self.correct_moves.append((mid_point, end_point))
+                points = gen_curve_points(curr_pos, mid_point, end_point)
+                draw.line(points, 1, 1)
+                curr_pos = end_point
+            self.ref = np.array(img).swapaxes(0, 1)
+            self.ref_filter = (
+                self.ref * 2 + gaussian_filter(np.float32(self.ref), sigma=4) * 4
+            ).clip(0, 1)
 
         self.canvas = np.zeros([self.img_size, self.img_size])
         pos_channel = self.gen_pos_channel(
             self.last_pos[0], self.last_pos[1], self.img_size
         )
-        obs = np.stack([self.canvas, self.ref, pos_channel])
+        obs = np.concatenate([np.stack([self.canvas, pos_channel]), self.ref], 0)
         self.canvas_draw.rectangle((0, 0, self.img_size, self.img_size), 0)
         self.last_diff = (np.abs(self.canvas - self.ref_filter)).sum() / self.max_diff
         return obs, {}
