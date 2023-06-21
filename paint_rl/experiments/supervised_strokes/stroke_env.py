@@ -67,9 +67,8 @@ class StrokeEnv(gym.Env):
         reward = -(diff - self.last_diff)
         self.last_diff = diff
 
-        done = diff < 0.001
         self.counter += 1
-        trunc = self.counter == self.num_strokes
+        done = self.counter == self.num_strokes
 
         pixels_moved = abs(self.last_pos[0] - end_point[0]) + abs(
             self.last_pos[1] - end_point[1]
@@ -83,7 +82,7 @@ class StrokeEnv(gym.Env):
         )
         obs = np.stack([self.canvas, self.ref, pos_channel])
 
-        return obs, reward, done, trunc, {}
+        return obs, reward, done, False, {}
 
     def reset(self, **kwargs) -> tuple[np.ndarray, dict[str, Any]]:
         self.counter = 0

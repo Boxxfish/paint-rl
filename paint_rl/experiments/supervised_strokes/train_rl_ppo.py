@@ -155,8 +155,6 @@ if len(sys.argv) > 1 and sys.argv[1] == "test":
                 new_test_env.ref_filter = img_ref / 4.0
                 new_test_env.num_strokes = 20
             reward_total += reward
-    input("Press any button to quit...")
-    quit()
 
 wandb.init(
     project="paint-rl",
