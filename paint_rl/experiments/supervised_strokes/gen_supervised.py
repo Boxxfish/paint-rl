@@ -129,7 +129,7 @@ def gen_sample(img_size: int) -> Tuple[Image.Image, List[Tuple[int, int]]]:
     return (Image.fromarray(np.uint8(final * 255)), path)
 
 
-def gen_shape(img_size: int) -> Tuple[Image.Image, List[Tuple[int, int]]]:
+def gen_shape(img_size: int) -> Tuple[Image.Image, List[Tuple[int, int]], int]:
     c_img = Image.new("1", (img_size, img_size))
     c_draw = ImageDraw.Draw(c_img)
     r_img = Image.new("1", (img_size, img_size))
@@ -199,7 +199,7 @@ def gen_shape(img_size: int) -> Tuple[Image.Image, List[Tuple[int, int]]]:
         .swapaxes(0, 2)
         .swapaxes(0, 1)
     )
-    return (Image.fromarray(np.uint8(final * 255)), path)
+    return (Image.fromarray(np.uint8(final * 255)), path, num_points - num_strokes)
 
 
 def main():

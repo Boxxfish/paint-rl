@@ -16,7 +16,7 @@ def main():
     net = StrokeNet(img_size)
     net.load_state_dict(torch.load("temp/stroke_net.pt"))
     while True:
-        img, path = gen_shape(img_size)
+        img, path, _ = gen_shape(img_size)
         draw = ImageDraw.Draw(img)
         inpt = torch.from_numpy(np.array(img)).swapaxes(2, 0).unsqueeze(0) / 255.0
         out = net(inpt).squeeze() * img_size
