@@ -91,7 +91,8 @@ class RefStrokeEnv(gym.Env):
                 .unsqueeze(0)
                 .float()
             )
-            score = torch.softmax(self.reward_model(reward_inpt).squeeze(0), 0)[1].item()
+            with torch.no_grad():
+                score = self.reward_model(reward_inpt.cuda()).item()
             reward = score - self.last_score
         self.last_score = score
 
@@ -107,7 +108,7 @@ class RefStrokeEnv(gym.Env):
         self.canvas = np.zeros([self.img_size, self.img_size])
         index = random.randrange(0, len(self.ref_imgs))
         self.ref = self.ref_imgs[index]
-        self.num_strokes = 20
+        self.num_strokes = 30
         self.last_pos = rand_point(
             MIN_DIST, MAX_DIST, prev=(self.img_size // 2, self.img_size // 2)
         )
@@ -128,7 +129,8 @@ class RefStrokeEnv(gym.Env):
         )
         self.last_score = 0.0
         if self.reward_model:
-            self.last_score = torch.softmax(self.reward_model(reward_inpt).squeeze(0), 0)[1].item()
+            with torch.no_grad():
+                self.last_score = self.reward_model(reward_inpt.cuda()).item()
         return obs, {}
 
     def render(self) -> None:

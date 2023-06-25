@@ -15,6 +15,7 @@ import sys
 from typing import Any
 
 import gymnasium as gym
+from matplotlib import pyplot as plt # type: ignore
 import numpy as np
 import torch
 import torch.nn as nn
@@ -24,7 +25,7 @@ from gymnasium.wrappers.normalize import NormalizeReward
 from torch.distributions import Normal
 from tqdm import tqdm
 from PIL import Image  # type: ignore
-
+from torch.nn.utils.parametrizations import spectral_norm
 from paint_rl.algorithms.ppo_cont import train_ppo
 from paint_rl.algorithms.rollout_buffer import RolloutBuffer
 from paint_rl.conf import entity
@@ -37,19 +38,19 @@ _: Any
 # Hyperparameters
 num_envs = 128  # Number of environments to step through at once during sampling.
 train_steps = 64  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs/
-iterations = 500  # Number of sample/train iterations.
+iterations = 600  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
 train_batch_size = 2048  # Minibatch size while training models.
-discount = 0.95  # Discount factor applied to rewards.
-lambda_ = 0.95  # Lambda for GAE.
-epsilon = 0.2  # Epsilon for importance sample clipping.
+discount = 0.9  # Discount factor applied to rewards.
+lambda_ = 0.99  # Lambda for GAE.
+epsilon = 0.1  # Epsilon for importance sample clipping.
 max_eval_steps = 10  # Number of eval runs to average over.
 eval_steps = 1  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
-p_lr = 0.0001  # Learning rate of the policy net.
-d_lr = 0.001  # Learning rate of the discriminator.
-action_scale = 0.2  # Scale for actions.
-gen_steps = 1  # Number of generator steps per iteration.
+p_lr = 0.0003  # Learning rate of the policy net.
+d_lr = 0.0002  # Learning rate of the discriminator.
+action_scale = 0.1  # Scale for actions.
+gen_steps = 4  # Number of generator steps per iteration.
 disc_steps = 1  # Number of discriminator steps per iteration.
 disc_ds_size = 1000  # Size of the discriminator dataset. Half will be generated.
 disc_batch_size = 64  # Batch size for the discriminator.
@@ -102,8 +103,8 @@ class ValueNet(nn.Module):
         self.v_layer2 = nn.Linear(shared_net.out_size, 64)
         self.v_layer3 = nn.Linear(64, 1)
         self.relu = nn.ReLU()
-        init_orthogonal(self)
         self.shared_net = shared_net
+        init_orthogonal(self)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         x = self.shared_net(input)
@@ -142,7 +143,7 @@ class Discriminator(nn.Module):
     """
     Takes the reference image and the drawn image and returns whether it's
     ground truth or generated. 0: Generated, 1: Real.
-    Outputs UNNORMALIZED logits.
+    Based off the DCGAN discriminator architecture.
     """
 
     def __init__(
@@ -150,28 +151,29 @@ class Discriminator(nn.Module):
     ):
         nn.Module.__init__(self)
         self.net = nn.Sequential(
-            nn.Conv2d(4, 12, 3, 2),
-            nn.ReLU(),
-            nn.Conv2d(12, 32, 3, 2),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, 3, 2),
-            nn.ReLU(),
+            spectral_norm(nn.Conv2d(4, 128, 3, 2, padding=1)),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.2),
+            spectral_norm(nn.Conv2d(128, 256, 3, 2, padding=1)),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.2),
+            spectral_norm(nn.Conv2d(256, 512, 3, 2, padding=1)),
+            nn.BatchNorm2d(512),
+            nn.LeakyReLU(0.2),
+            spectral_norm(nn.Conv2d(512, 1024, 3, 2, padding=1)),
+            nn.BatchNorm2d(1024),
+            nn.LeakyReLU(0.2),
+            nn.Flatten(),
+            spectral_norm(nn.Linear(1024 * 4**2, 1)),
+            nn.Sigmoid(),
         )
-        self.net2 = nn.Sequential(
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, 2),
-        )
-        init_orthogonal(self)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.net(x)
-        x = torch.max(torch.max(x, 3).values, 2).values
-        x = self.net2(x)
         return x
 
 
-def gen_output(p_net: PolicyNet, ref: np.ndarray, img_size: int) -> np.ndarray:
+def gen_output(p_net: PolicyNet, ref: np.ndarray, img_size: int, action_scale: float) -> np.ndarray:
     """
     Given a reference image, returns the canvas with generated strokes.
     """
@@ -180,7 +182,7 @@ def gen_output(p_net: PolicyNet, ref: np.ndarray, img_size: int) -> np.ndarray:
     obs = torch.from_numpy(obs_).float()
     done = False
     while not done:
-        distr = Normal(loc=p_net(obs.unsqueeze(0)).squeeze(), scale=0.0001)
+        distr = Normal(loc=p_net(obs.unsqueeze(0)).squeeze(), scale=action_scale)
         action = distr.sample().numpy()
         obs_, _, done, _, _ = temp_env.step(action)
         obs = torch.from_numpy(obs_).float()
@@ -197,7 +199,7 @@ print("Loading dataset...")
 for dir in tqdm(islice(ds_path.iterdir(), 2000)):
     stroke_img = Image.open(dir / "outlines.png")
     stroke_img = stroke_img.resize((img_size, img_size))
-    stroke_imgs.append(np.array(stroke_img).transpose([2, 0, 1])[1] / 255.0)
+    stroke_imgs.append(np.array(stroke_img).transpose([2, 0, 1])[1]  > 80)
     ref_img = Image.open(dir / "final.png")
     ref_img = ref_img.resize((img_size, img_size))
     ref_img = ref_img.convert("RGB")
@@ -205,11 +207,13 @@ for dir in tqdm(islice(ds_path.iterdir(), 2000)):
 
 # Initialize discriminator
 d_net = Discriminator()
+d_net.to(device)
+d_net.eval()
 d_opt = torch.optim.Adam(d_net.parameters(), lr=d_lr)
 
 env = gym.vector.SyncVectorEnv(
     [
-        lambda: NormalizeReward(TimeLimit(RefStrokeEnv(img_size, ref_imgs, d_net), 10))
+        lambda: NormalizeReward(RefStrokeEnv(img_size, ref_imgs, d_net))
         for _ in range(num_envs)
     ]
 )
@@ -290,11 +294,11 @@ for step in tqdm(range(iterations), position=0):
     # Training the generator
     total_p_loss = 0.0
     total_v_loss = 0.0
-    for _ in range(gen_steps):
+    for _ in tqdm(range(gen_steps), position=1):
         action_scale = orig_action_scale * (1.0 - step / iterations)
         # Collect experience for a number of steps and store it in the buffer
         with torch.no_grad():
-            for _ in tqdm(range(train_steps), position=1):
+            for _ in tqdm(range(train_steps), position=2):
                 action_probs = p_net(obs)
                 actions = Normal(loc=action_probs, scale=action_scale).sample().numpy()
                 obs_, rewards, dones, truncs, _ = env.step(actions)
@@ -336,36 +340,38 @@ for step in tqdm(range(iterations), position=0):
     ds_refs = np.stack([ref_imgs[i] for i in ds_indices]) # Shape: (disc_ds_size, 3, img_size, img_size)
     ground_truth = [stroke_imgs[i] for i in ds_indices[: disc_ds_size // 2]]
     generated = [
-        gen_output(p_net, ref_imgs[i], img_size)
+        gen_output(p_net, ref_imgs[i], img_size, action_scale)
         for i in ds_indices[disc_ds_size // 2 :]
     ]
     ds_canvases = np.expand_dims(np.stack(ground_truth + generated), 1) # Shape: (disc_ds_size, 1, img_size, img_size)
-    ds_x = np.concatenate([ds_refs, ds_canvases], 1) # Shape: (disc_ds_size, 4, img_size, img_size)
+    ds_x = torch.from_numpy(np.concatenate([ds_refs, ds_canvases], 1)).float().to(device) # Shape: (disc_ds_size, 4, img_size, img_size)
     del ds_refs, ds_canvases
-    ds_y = np.concatenate(
+    ds_y = torch.from_numpy(np.concatenate(
         [
-            np.ones([disc_ds_size // 2], dtype=np.int64),
-            np.zeros([disc_ds_size // 2], dtype=np.int64),
+            np.ones([disc_ds_size // 2]) * np.random.normal(0.9, 0.01, [disc_ds_size // 2]),
+            np.zeros([disc_ds_size // 2]),
         ],
         0,
-    )
-    d_crit = nn.CrossEntropyLoss()
+    )).float().to(device)
+    d_crit = nn.BCELoss()
     num_batches = disc_ds_size // disc_batch_size
     avg_disc_loss = 0.0
-    for _ in range(disc_steps):
-        epoch_indices = np.random.permutation(disc_ds_size)
-        epoch_x = torch.from_numpy(ds_x[epoch_indices]).float()
-        epoch_y = torch.from_numpy(ds_y[epoch_indices])
+    d_net.train()
+    for _ in tqdm(range(disc_steps), position=1):
+        epoch_indices = torch.from_numpy(np.random.permutation(disc_ds_size))
+        ds_x = ds_x[epoch_indices]
+        ds_y = ds_y[epoch_indices]
         for i in range(num_batches):
-            batch_x = epoch_x[i * disc_batch_size : (i + 1) * disc_batch_size]
-            batch_y = epoch_y[i * disc_batch_size : (i + 1) * disc_batch_size]
+            batch_x = ds_x[i * disc_batch_size : (i + 1) * disc_batch_size]
+            batch_y = ds_y[i * disc_batch_size : (i + 1) * disc_batch_size]
             d_opt.zero_grad()
-            pred_y = d_net(batch_x)
+            pred_y = d_net(batch_x).squeeze(1)
             loss = d_crit(pred_y, batch_y)
             avg_disc_loss += loss.item()
             loss.backward()
             d_opt.step()
     avg_disc_loss /= disc_steps * num_batches
+    d_net.eval()
 
     # Evaluate the network's performance after this training iteration.
     with torch.no_grad():
@@ -375,8 +381,7 @@ for step in tqdm(range(iterations), position=0):
         for _ in range(eval_steps):
             steps_taken = 0
             for _ in range(max_eval_steps):
-                # Action scale is very small since it should learn a deterministic policy
-                distr = Normal(loc=p_net(eval_obs.unsqueeze(0)).squeeze(), scale=0.0001)
+                distr = Normal(loc=p_net(eval_obs.unsqueeze(0)).squeeze(), scale=action_scale)
                 action = distr.sample().numpy()
                 obs_, reward, eval_done, eval_trunc, _ = test_env.step(action)
                 test_env.render()
@@ -397,5 +402,7 @@ for step in tqdm(range(iterations), position=0):
         }
     )
 
-    if step % 5 == 0:
+    if step % 2 == 0:
         torch.save(p_net.state_dict(), "temp/p_net.pt")
+        torch.save(p_net.state_dict(), "temp/v_net.pt")
+        torch.save(p_net.state_dict(), "temp/d_net.pt")
