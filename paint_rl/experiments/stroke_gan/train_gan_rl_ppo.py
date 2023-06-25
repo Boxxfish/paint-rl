@@ -56,6 +56,11 @@ disc_ds_size = 1000  # Size of the discriminator dataset. Half will be generated
 disc_batch_size = 64  # Batch size for the discriminator.
 device = torch.device("cuda")  # Device to use during training.
 
+# Argument parsing
+parser = ArgumentParser()
+parser.add_argument("--eval", action="store_true")
+parser.add_argument("--resume", action="store_true")
+args = parser.parse_args()
 
 class SharedNet(nn.Module):
     """
@@ -219,11 +224,6 @@ env = gym.vector.SyncVectorEnv(
 )
 test_env = RefStrokeEnv(img_size, ref_imgs, d_net, render_mode="human")
 
-# Argument parsing
-parser = ArgumentParser()
-parser.add_argument("--eval", action="store_true")
-args = parser.parse_args()
-
 # If evaluating, run the sim
 if args.eval:
     eval_done = False
@@ -276,6 +276,12 @@ v_net = ValueNet(SharedNet(img_size))
 p_net = PolicyNet(int(act_space.shape[0]), SharedNet(img_size))
 v_opt = torch.optim.Adam(v_net.parameters(), lr=v_lr)
 p_opt = torch.optim.Adam(p_net.parameters(), lr=p_lr)
+
+# If resuming, load state dicts
+if args.resume:
+    v_net.load_state_dict(torch.load("temp/v_net.pt"))
+    p_net.load_state_dict(torch.load("temp/p_net.pt"))
+    d_net.load_state_dict(torch.load("temp/d_net.pt"))
 
 # A rollout buffer stores experience collected during a sampling run
 buffer = RolloutBuffer(
