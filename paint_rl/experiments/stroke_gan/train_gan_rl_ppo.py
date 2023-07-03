@@ -51,7 +51,7 @@ p_lr = 0.0003  # Learning rate of the policy net.
 d_lr = 0.0002  # Learning rate of the discriminator.
 action_scale = 0.1  # Scale for actions.
 gen_steps = 4  # Number of generator steps per iteration.
-disc_steps = 1  # Number of discriminator steps per iteration.
+disc_steps = 4  # Number of discriminator steps per iteration.
 disc_ds_size = 1000  # Size of the discriminator dataset. Half will be generated.
 disc_batch_size = 64  # Batch size for the discriminator.
 device = torch.device("cuda")  # Device to use during training.
@@ -410,5 +410,5 @@ for step in tqdm(range(iterations), position=0):
 
     if step % 2 == 0:
         torch.save(p_net.state_dict(), "temp/p_net.pt")
-        torch.save(p_net.state_dict(), "temp/v_net.pt")
-        torch.save(p_net.state_dict(), "temp/d_net.pt")
+        torch.save(v_net.state_dict(), "temp/v_net.pt")
+        torch.save(d_net.state_dict(), "temp/d_net.pt")
