@@ -12,22 +12,21 @@ from functools import reduce
 from itertools import islice
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, Tuple
 
 import gymnasium as gym
-from matplotlib import pyplot as plt # type: ignore
+from matplotlib import pyplot as plt  # type: ignore
 import numpy as np
 import torch
 import torch.nn as nn
 import wandb
-from gymnasium.wrappers.time_limit import TimeLimit
 from gymnasium.wrappers.normalize import NormalizeReward
-from torch.distributions import Normal
+from torch.distributions import Normal, Categorical
 from tqdm import tqdm
 from PIL import Image  # type: ignore
 from torch.nn.utils.parametrizations import spectral_norm
-from paint_rl.algorithms.ppo_cont import train_ppo
-from paint_rl.algorithms.rollout_buffer import RolloutBuffer
+from paint_rl.algorithms.ppo_multi import train_ppo
+from paint_rl.algorithms.rollout_buffer import ActionRolloutBuffer, RolloutBuffer
 from paint_rl.conf import entity
 from paint_rl.experiments.supervised_strokes.gen_supervised import IMG_SIZE
 from paint_rl.experiments.stroke_gan.ref_stroke_env import RefStrokeEnv
@@ -37,23 +36,25 @@ _: Any
 
 # Hyperparameters
 num_envs = 128  # Number of environments to step through at once during sampling.
-train_steps = 64  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs/
+train_steps = 64  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 600  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
 train_batch_size = 2048  # Minibatch size while training models.
-discount = 0.9  # Discount factor applied to rewards.
+discount = 0.99  # Discount factor applied to rewards.
 lambda_ = 0.99  # Lambda for GAE.
 epsilon = 0.1  # Epsilon for importance sample clipping.
 max_eval_steps = 10  # Number of eval runs to average over.
 eval_steps = 1  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
 p_lr = 0.0003  # Learning rate of the policy net.
-d_lr = 0.0002  # Learning rate of the discriminator.
+d_lr = 0.001  # Learning rate of the discriminator.
 action_scale = 0.1  # Scale for actions.
 gen_steps = 4  # Number of generator steps per iteration.
-disc_steps = 4  # Number of discriminator steps per iteration.
+disc_steps = 1  # Number of discriminator steps per iteration.
 disc_ds_size = 1000  # Size of the discriminator dataset. Half will be generated.
 disc_batch_size = 64  # Batch size for the discriminator.
+stroke_width = 4
+canvas_size = 256
 device = torch.device("cuda")  # Device to use during training.
 
 # Argument parsing
@@ -61,6 +62,7 @@ parser = ArgumentParser()
 parser.add_argument("--eval", action="store_true")
 parser.add_argument("--resume", action="store_true")
 args = parser.parse_args()
+
 
 class SharedNet(nn.Module):
     """
@@ -105,10 +107,10 @@ class ValueNet(nn.Module):
         shared_net: SharedNet,
     ):
         nn.Module.__init__(self)
+        self.shared_net = shared_net
         self.v_layer2 = nn.Linear(shared_net.out_size, 64)
         self.v_layer3 = nn.Linear(64, 1)
         self.relu = nn.ReLU()
-        self.shared_net = shared_net
         init_orthogonal(self)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
@@ -123,25 +125,32 @@ class ValueNet(nn.Module):
 class PolicyNet(nn.Module):
     def __init__(
         self,
-        action_count: int,
+        action_count_cont: int,
+        action_count_discrete: int,
         shared_net: SharedNet,
     ):
         nn.Module.__init__(self)
         self.shared_net = shared_net
-        self.a_layer2 = nn.Linear(shared_net.out_size, 64)
-        self.a_layer3 = nn.Linear(64, action_count)
+        self.continuous = nn.Sequential(
+            nn.Linear(shared_net.out_size, 64),
+            nn.ReLU(),
+            nn.Linear(64, action_count_cont),
+            nn.Sigmoid(),
+        )
+        self.discrete = nn.Sequential(
+            nn.Linear(shared_net.out_size, 64),
+            nn.ReLU(),
+            nn.Linear(64, action_count_discrete),
+            nn.LogSoftmax(1),
+        )
         self.relu = nn.ReLU()
-        self.sigmoid = nn.Sigmoid()
         init_orthogonal(self)
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = self.shared_net(input)
-        x = self.relu(x)
-        x = self.a_layer2(x)
-        x = self.relu(x)
-        x = self.a_layer3(x)
-        x = self.sigmoid(x)
-        return x
+        cont = self.continuous(x)
+        disc = self.discrete(x)
+        return (cont, disc)
 
 
 class Discriminator(nn.Module):
@@ -178,18 +187,23 @@ class Discriminator(nn.Module):
         return x
 
 
-def gen_output(p_net: PolicyNet, ref: np.ndarray, img_size: int, action_scale: float) -> np.ndarray:
+def gen_output(
+    p_net: PolicyNet, ref: np.ndarray, canvas_size: int, stroke_width: int, img_size: int, action_scale: float
+) -> np.ndarray:
     """
     Given a reference image, returns the canvas with generated strokes.
     """
-    temp_env = RefStrokeEnv(img_size, [ref], None)
+    temp_env = RefStrokeEnv(canvas_size, img_size, [ref], None, stroke_width=stroke_width)
     obs_, _ = temp_env.reset()
     obs = torch.from_numpy(obs_).float()
     done = False
     while not done:
-        distr = Normal(loc=p_net(obs.unsqueeze(0)).squeeze(), scale=action_scale)
-        action = distr.sample().numpy()
-        obs_, _, done, _, _ = temp_env.step(action)
+        action_probs_cont, action_probs_disc = p_net(obs.unsqueeze(0))
+        cont_distr = Normal(loc=action_probs_cont.squeeze(), scale=action_scale)
+        disc_distr = Categorical(logits=action_probs_disc.squeeze())
+        action_cont = cont_distr.sample().numpy()
+        action_disc = disc_distr.sample().numpy()
+        obs_, _, done, _, _ = temp_env.step((action_cont, action_disc))
         obs = torch.from_numpy(obs_).float()
     return np.array(temp_env.canvas)
 
@@ -203,8 +217,8 @@ print("Loading dataset...")
 
 for dir in tqdm(islice(ds_path.iterdir(), 2000)):
     stroke_img = Image.open(dir / "outlines.png")
-    stroke_img = stroke_img.resize((img_size, img_size))
-    stroke_imgs.append(np.array(stroke_img).transpose([2, 0, 1])[1]  > 80)
+    stroke_img = stroke_img.resize((img_size, img_size), resample=Image.Resampling.BILINEAR)
+    stroke_imgs.append(np.array(stroke_img).transpose([2, 0, 1])[1] / 255.0)
     ref_img = Image.open(dir / "final.png")
     ref_img = ref_img.resize((img_size, img_size))
     ref_img = ref_img.convert("RGB")
@@ -218,17 +232,19 @@ d_opt = torch.optim.Adam(d_net.parameters(), lr=d_lr)
 
 env = gym.vector.SyncVectorEnv(
     [
-        lambda: NormalizeReward(RefStrokeEnv(img_size, ref_imgs, d_net))
+        lambda: NormalizeReward(RefStrokeEnv(canvas_size, img_size, ref_imgs, d_net, stroke_width=stroke_width))
         for _ in range(num_envs)
     ]
 )
-test_env = RefStrokeEnv(img_size, ref_imgs, d_net, render_mode="human")
+test_env = RefStrokeEnv(canvas_size, img_size, ref_imgs, d_net, stroke_width=stroke_width, render_mode="human")
 
 # If evaluating, run the sim
 if args.eval:
     eval_done = False
-    test_env = TimeLimit(StrokeEnv(img_size, render_mode="human"), 10)  # type: ignore
-    p_net = PolicyNet(action_count=4, shared_net=SharedNet(img_size))
+    test_env = RefStrokeEnv(canvas_size, img_size, ref_imgs, None, stroke_width=stroke_width, render_mode="human")
+    p_net = PolicyNet(
+        action_count_cont=4, action_count_discrete=2, shared_net=SharedNet(img_size)
+    )
     p_net.load_state_dict(torch.load("temp/p_net.pt"))
     with torch.no_grad():
         reward_total = 0.0
@@ -236,9 +252,10 @@ if args.eval:
         while True:
             steps_taken = 0
             for _ in range(max_eval_steps):
-                distr = Normal(loc=p_net(eval_obs.unsqueeze(0)).squeeze(), scale=0.0001)
-                action = distr.sample().numpy()
-                obs_, reward, eval_done, eval_trunc, _ = test_env.step(action)
+                action_probs_cont, action_probs_disc = p_net(eval_obs.unsqueeze(0))
+                actions_cont = Normal(loc=action_probs_cont.squeeze(), scale=0.001).sample().numpy()
+                actions_disc = Categorical(logits=action_probs_disc.squeeze()).sample().unsqueeze(-1).numpy()
+                obs_, reward, eval_done, eval_trunc, _ = test_env.step((actions_cont, actions_disc))
                 test_env.render()
                 eval_obs = torch.Tensor(obs_)
                 steps_taken += 1
@@ -271,9 +288,17 @@ obs_space = env.single_observation_space
 assert obs_space.shape is not None
 obs_shape = torch.Size(obs_space.shape)
 act_space = env.single_action_space
-assert isinstance(act_space, gym.spaces.Box)
+assert isinstance(act_space, gym.spaces.Tuple)
+assert isinstance(act_space.spaces[0], gym.spaces.Box)
+assert isinstance(act_space.spaces[1], gym.spaces.Discrete)
+action_count_cont = int(act_space.spaces[0].shape[0])
+action_count_discrete = int(act_space.spaces[1].n)
 v_net = ValueNet(SharedNet(img_size))
-p_net = PolicyNet(int(act_space.shape[0]), SharedNet(img_size))
+p_net = PolicyNet(
+    action_count_cont=action_count_cont,
+    action_count_discrete=action_count_discrete,
+    shared_net=SharedNet(img_size),
+)
 v_opt = torch.optim.Adam(v_net.parameters(), lr=v_lr)
 p_opt = torch.optim.Adam(p_net.parameters(), lr=p_lr)
 
@@ -284,11 +309,18 @@ if args.resume:
     d_net.load_state_dict(torch.load("temp/d_net.pt"))
 
 # A rollout buffer stores experience collected during a sampling run
-buffer = RolloutBuffer(
+buffer_cont = RolloutBuffer(
     obs_shape,
-    torch.Size((int(act_space.shape[0]),)),
-    torch.Size((int(act_space.shape[0]),)),
+    torch.Size((action_count_cont,)),
+    torch.Size((action_count_cont,)),
     torch.float,
+    num_envs,
+    train_steps,
+)
+buffer_disc = ActionRolloutBuffer(
+    torch.Size((1,)),
+    torch.Size((action_count_discrete,)),
+    torch.int,
     num_envs,
     train_steps,
 )
@@ -305,22 +337,27 @@ for step in tqdm(range(iterations), position=0):
         # Collect experience for a number of steps and store it in the buffer
         with torch.no_grad():
             for _ in tqdm(range(train_steps), position=2):
-                action_probs = p_net(obs)
-                actions = Normal(loc=action_probs, scale=action_scale).sample().numpy()
-                obs_, rewards, dones, truncs, _ = env.step(actions)
-                buffer.insert_step(
+                action_probs_cont, action_probs_disc = p_net(obs)
+                actions_cont = Normal(loc=action_probs_cont, scale=action_scale).sample().numpy()
+                actions_disc = Categorical(logits=action_probs_disc).sample().unsqueeze(-1).numpy()
+                obs_, rewards, dones, truncs, _ = env.step((actions_cont, actions_disc))
+                buffer_cont.insert_step(
                     obs,
-                    torch.from_numpy(actions),
-                    action_probs,
+                    torch.from_numpy(actions_cont),
+                    action_probs_cont,
                     list(rewards),
                     list(dones),
                     list(truncs),
+                )
+                buffer_disc.insert_step(
+                    torch.from_numpy(actions_disc),
+                    action_probs_disc,
                 )
                 obs = torch.from_numpy(obs_)
                 if done:
                     obs = torch.Tensor(env.reset()[0])
                     done = False
-            buffer.insert_final_step(obs)
+            buffer_cont.insert_final_step(obs)
 
         # Train
         step_p_loss, step_v_loss = train_ppo(
@@ -328,7 +365,7 @@ for step in tqdm(range(iterations), position=0):
             v_net,
             p_opt,
             v_opt,
-            buffer,
+            (buffer_cont, buffer_disc),
             device,
             train_iters,
             train_batch_size,
@@ -339,26 +376,40 @@ for step in tqdm(range(iterations), position=0):
         )
         total_p_loss += step_p_loss
         total_v_loss += step_v_loss
-        buffer.clear()
+        buffer_cont.clear()
+        buffer_disc.clear()
 
     # Training the discriminator
     ds_indices = np.random.permutation(len(ref_imgs))[:disc_ds_size].tolist()
-    ds_refs = np.stack([ref_imgs[i] for i in ds_indices]) # Shape: (disc_ds_size, 3, img_size, img_size)
+    ds_refs = np.stack(
+        [ref_imgs[i] for i in ds_indices]
+    )  # Shape: (disc_ds_size, 3, img_size, img_size)
     ground_truth = [stroke_imgs[i] for i in ds_indices[: disc_ds_size // 2]]
     generated = [
-        gen_output(p_net, ref_imgs[i], img_size, action_scale)
+        gen_output(p_net, ref_imgs[i], canvas_size, stroke_width, img_size, action_scale)
         for i in ds_indices[disc_ds_size // 2 :]
     ]
-    ds_canvases = np.expand_dims(np.stack(ground_truth + generated), 1) # Shape: (disc_ds_size, 1, img_size, img_size)
-    ds_x = torch.from_numpy(np.concatenate([ds_refs, ds_canvases], 1)).float().to(device) # Shape: (disc_ds_size, 4, img_size, img_size)
+    ds_canvases = np.expand_dims(
+        np.stack(ground_truth + generated), 1
+    )  # Shape: (disc_ds_size, 1, img_size, img_size)
+    ds_x = (
+        torch.from_numpy(np.concatenate([ds_refs, ds_canvases], 1)).float().to(device)
+    )  # Shape: (disc_ds_size, 4, img_size, img_size)
     del ds_refs, ds_canvases
-    ds_y = torch.from_numpy(np.concatenate(
-        [
-            np.ones([disc_ds_size // 2]) * np.random.normal(0.9, 0.01, [disc_ds_size // 2]),
-            np.zeros([disc_ds_size // 2]),
-        ],
-        0,
-    )).float().to(device)
+    ds_y = (
+        torch.from_numpy(
+            np.concatenate(
+                [
+                    np.ones([disc_ds_size // 2])
+                    * np.random.normal(0.9, 0.01, [disc_ds_size // 2]),
+                    np.zeros([disc_ds_size // 2]),
+                ],
+                0,
+            )
+        )
+        .float()
+        .to(device)
+    )
     d_crit = nn.BCELoss()
     num_batches = disc_ds_size // disc_batch_size
     avg_disc_loss = 0.0
@@ -387,9 +438,11 @@ for step in tqdm(range(iterations), position=0):
         for _ in range(eval_steps):
             steps_taken = 0
             for _ in range(max_eval_steps):
-                distr = Normal(loc=p_net(eval_obs.unsqueeze(0)).squeeze(), scale=action_scale)
-                action = distr.sample().numpy()
-                obs_, reward, eval_done, eval_trunc, _ = test_env.step(action)
+                
+                action_probs_cont, action_probs_disc = p_net(eval_obs.unsqueeze(0))
+                actions_cont = Normal(loc=action_probs_cont.squeeze(), scale=action_scale).sample().numpy()
+                actions_disc = Categorical(logits=action_probs_disc.squeeze()).sample().unsqueeze(-1).numpy()
+                obs_, reward, eval_done, eval_trunc, _ = test_env.step((actions_cont, actions_disc))
                 test_env.render()
                 eval_obs = torch.Tensor(obs_)
                 steps_taken += 1

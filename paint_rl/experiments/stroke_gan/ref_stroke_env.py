@@ -1,5 +1,5 @@
 import random
-from typing import Any, List, Optional
+from typing import Tuple, List, Optional, Any
 import gymnasium as gym
 import numpy as np
 from PIL import Image, ImageDraw  # type: ignore
@@ -21,29 +21,51 @@ SCREEN_SCALE = 4
 class RefStrokeEnv(gym.Env):
     """
     An environment where given an image, the agent must draw a stroked version of it.
+
+    ## Actions:
+
+    ### Continuous:
+        0. 0.0 - 1.0 midpoint X coord.
+        1. 0.0 - 1.0 midpoint Y coord.
+        2. 0.0 - 1.0 endpoint X coord.
+        3. 0.0 - 1.0 endpoint Y coord.
+
+    ### Discrete:
+        0. Pen up.
+        1. Pen down.
     """
 
     def __init__(
         self,
+        canvas_size: int,
         img_size: int,
         ref_imgs: List[np.ndarray],
         reward_model: Optional[nn.Module],
         render_mode: Optional[str] = None,
+        stroke_width=1,
     ) -> None:
         """
+        canvas_size: Original canvas size. This will be downsampled to `img_size`.
         img_size: Size of the image.
         ref_imgs: Pool of reference images to choose from. If None, model is not used.
         reward_model: Classifier that acts as a reward signal.
         """
         super().__init__()
         self.observation_space = gym.spaces.Box(0.0, 1.0, [5, img_size, img_size])
-        self.action_space = gym.spaces.Box(
-            -1.0,
-            1.0,
+        self.action_space = gym.spaces.Tuple(
             [
-                4,
-            ],
+                gym.spaces.Box(
+                    -1.0,
+                    1.0,
+                    [
+                        4,
+                    ],
+                ),
+                gym.spaces.Discrete(2),
+            ]
         )
+        self.canvas_size = canvas_size
+        self.stroke_width = stroke_width
         self.img_size = img_size
         self.ref_imgs = ref_imgs
         self.ref = np.zeros([0, img_size, img_size])
@@ -54,7 +76,7 @@ class RefStrokeEnv(gym.Env):
         self.render_mode = render_mode
         self.reward_model = reward_model
         self.last_score = 0.0
-        self.canvas_img = Image.new("1", (self.img_size, self.img_size))
+        self.canvas_img = Image.new("1", (self.canvas_size, self.canvas_size))
         self.canvas_draw = ImageDraw.Draw(self.canvas_img)
         if self.render_mode == "human":
             pygame.init()
@@ -64,15 +86,20 @@ class RefStrokeEnv(gym.Env):
             self.clock = pygame.time.Clock()
 
     def step(
-        self, action: np.ndarray
+        self,
+        action: Tuple[np.ndarray, int],
     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-        action = np.clip(action.squeeze() * self.img_size, 0, self.img_size - 1)
-        mid_point = (int(action[0]), int(action[1]))
-        end_point = (int(action[2]), int(action[3]))
-        points = gen_curve_points(self.last_pos, mid_point, end_point)
-        self.canvas_draw.line(points, 1, 1)
-        new_stroke = np.array(self.canvas_img)
-        self.canvas = np.minimum(self.canvas + new_stroke, 1.0)
+        cont_action, disc_action = action
+        cont_action = np.clip(cont_action.squeeze() * self.canvas_size, 0, self.canvas_size - 1)
+        mid_point = (int(cont_action[0]), int(cont_action[1]))
+        end_point = (int(cont_action[2]), int(cont_action[3]))
+        pen_down = disc_action == 1
+        if pen_down:
+            points = gen_curve_points(self.last_pos, mid_point, end_point)
+            self.canvas_draw.line(points, 1, width=self.stroke_width)
+            scaled_canvas = self.canvas_img.convert("RGB").resize((self.img_size, self.img_size), resample=Image.Resampling.BILINEAR)
+            new_stroke = np.array(scaled_canvas).transpose(2, 0, 1)[1] / 255.0
+            self.canvas = new_stroke
 
         self.counter += 1
         done = self.counter == self.num_strokes
@@ -97,7 +124,7 @@ class RefStrokeEnv(gym.Env):
         self.last_score = score
 
         pos_channel = self.gen_pos_channel(
-            self.last_pos[0], self.last_pos[1], self.img_size
+            int(self.last_pos[0] * (self.img_size / self.canvas_size)), int(self.last_pos[1] * (self.img_size / self.canvas_size)), self.img_size
         )
         obs = np.concatenate([np.stack([self.canvas, pos_channel]), self.ref])
 
@@ -114,10 +141,10 @@ class RefStrokeEnv(gym.Env):
         )
 
         pos_channel = self.gen_pos_channel(
-            self.last_pos[0], self.last_pos[1], self.img_size
+            int(self.last_pos[0] * (self.img_size / self.canvas_size)), int(self.last_pos[1] * (self.img_size / self.canvas_size)), self.img_size
         )
         obs = np.concatenate([np.stack([self.canvas, pos_channel]), self.ref])
-        self.canvas_draw.rectangle((0, 0, self.img_size, self.img_size), 0)
+        self.canvas_draw.rectangle((0, 0, self.canvas_size, self.canvas_size), 0)
         reward_inpt = (
             torch.from_numpy(
                 np.concatenate(
@@ -136,7 +163,9 @@ class RefStrokeEnv(gym.Env):
     def render(self) -> None:
         if self.render_mode == "human":
             pos_channel = np.zeros([self.img_size, self.img_size])
-            pos_channel[self.last_pos[1]][self.last_pos[0]] = 1
+            pos_x = int(self.last_pos[0] * (self.img_size / self.canvas_size))
+            pos_y = int(self.last_pos[1] * (self.img_size / self.canvas_size))
+            pos_channel[pos_x][pos_y] = 1
             img = (
                 np.stack(
                     [self.canvas, self.ref.mean(0, keepdims=False), pos_channel]
