@@ -37,7 +37,7 @@ _: Any
 # Hyperparameters
 num_envs = 64  # Number of environments to step through at once during sampling.
 train_steps = 32  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
-iterations = 600  # Number of sample/train iterations.
+iterations = 100  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
 train_batch_size = 2048  # Minibatch size while training models.
 discount = 0.99  # Discount factor applied to rewards.
@@ -49,7 +49,7 @@ v_lr = 0.001  # Learning rate of the value net.
 p_lr = 0.0003  # Learning rate of the policy net.
 d_lr = 0.001  # Learning rate of the discriminator.
 action_scale = 0.2  # Scale for actions.
-gen_steps = 20  # Number of generator steps per iteration.
+gen_steps = 10  # Number of generator steps per iteration.
 disc_steps = 1  # Number of discriminator steps per iteration.
 disc_ds_size = 2000  # Size of the discriminator dataset. Half will be generated.
 disc_batch_size = 64  # Batch size for the discriminator.
@@ -541,7 +541,7 @@ for step in tqdm(range(iterations), position=0):
         }
     )
 
-    if step % 2 == 0:
+    if step % 1 == 0:
         torch.save(p_net.state_dict(), "temp/p_net.pt")
         torch.save(v_net.state_dict(), "temp/v_net.pt")
         torch.save(d_net.state_dict(), "temp/d_net.pt")
