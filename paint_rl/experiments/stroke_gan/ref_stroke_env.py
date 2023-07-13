@@ -43,6 +43,7 @@ class RefStrokeEnv(gym.Env):
         reward_model: Optional[nn.Module],
         render_mode: Optional[str] = None,
         stroke_width=1,
+        max_strokes=30,
     ) -> None:
         """
         canvas_size: Original canvas size. This will be downsampled to `img_size`.
@@ -64,6 +65,7 @@ class RefStrokeEnv(gym.Env):
                 gym.spaces.Discrete(2),
             ]
         )
+        self.max_strokes = max_strokes
         self.canvas_size = canvas_size
         self.stroke_width = stroke_width
         self.img_size = img_size
@@ -135,7 +137,7 @@ class RefStrokeEnv(gym.Env):
         self.canvas = np.zeros([self.img_size, self.img_size])
         index = random.randrange(0, len(self.ref_imgs))
         self.ref = self.ref_imgs[index]
-        self.num_strokes = 30
+        self.num_strokes = self.max_strokes
         self.last_pos = rand_point(
             MIN_DIST, MAX_DIST, prev=(self.img_size // 2, self.img_size // 2)
         )
@@ -165,11 +167,11 @@ class RefStrokeEnv(gym.Env):
             pos_channel = np.zeros([self.img_size, self.img_size])
             pos_x = int(self.last_pos[0] * (self.img_size / self.canvas_size))
             pos_y = int(self.last_pos[1] * (self.img_size / self.canvas_size))
-            pos_channel[pos_x][pos_y] = 1
+            pos_channel[pos_y][pos_x] = 1
             img = (
                 np.stack(
                     [self.canvas, self.ref.mean(0, keepdims=False), pos_channel]
-                ).transpose(1, 2, 0)
+                ).transpose(2, 1, 0)
                 * 255.0
             )
             img_surf = pygame.surfarray.make_surface(img)

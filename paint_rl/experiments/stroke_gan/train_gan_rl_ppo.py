@@ -30,7 +30,6 @@ from paint_rl.algorithms.rollout_buffer import ActionRolloutBuffer, RolloutBuffe
 from paint_rl.conf import entity
 from paint_rl.experiments.supervised_strokes.gen_supervised import IMG_SIZE
 from paint_rl.experiments.stroke_gan.ref_stroke_env import RefStrokeEnv
-from paint_rl.utils import init_orthogonal
 
 _: Any
 
@@ -89,7 +88,6 @@ class SharedNet(nn.Module):
         self.pos = nn.Parameter(
             torch.stack([w, h]).unsqueeze(0) / size, requires_grad=False
         )
-        init_orthogonal(self)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size = x.shape[0]
@@ -111,7 +109,6 @@ class ValueNet(nn.Module):
         self.v_layer2 = nn.Linear(shared_net.out_size, 64)
         self.v_layer3 = nn.Linear(64, 1)
         self.relu = nn.ReLU()
-        init_orthogonal(self)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         x = self.shared_net(input)
@@ -144,7 +141,6 @@ class PolicyNet(nn.Module):
             nn.LogSoftmax(1),
         )
         self.relu = nn.ReLU()
-        init_orthogonal(self)
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = self.shared_net(input)
