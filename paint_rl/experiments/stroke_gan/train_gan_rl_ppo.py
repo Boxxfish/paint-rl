@@ -30,6 +30,9 @@ from paint_rl.algorithms.rollout_buffer import ActionRolloutBuffer, RolloutBuffe
 from paint_rl.conf import entity
 from paint_rl.experiments.supervised_strokes.gen_supervised import IMG_SIZE
 from paint_rl.experiments.stroke_gan.ref_stroke_env import RefStrokeEnv
+from paint_rl.experiments.supervised_strokes.train_supervised_cube import (
+    StrokeNet as PolicyNet,
+)
 
 _: Any
 
@@ -45,12 +48,12 @@ epsilon = 0.1  # Epsilon for importance sample clipping.
 max_eval_steps = 30  # Number of eval runs to average over.
 eval_steps = 1  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
-p_lr = 0.0003  # Learning rate of the policy net.
+p_lr = 0.0001  # Learning rate of the policy net.
 d_lr = 0.001  # Learning rate of the discriminator.
-action_scale = 0.2  # Scale for actions.
+action_scale = 0.02  # Scale for actions.
 gen_steps = 10  # Number of generator steps per iteration.
 disc_steps = 1  # Number of discriminator steps per iteration.
-disc_ds_size = 2000  # Size of the discriminator dataset. Half will be generated.
+disc_ds_size = 512  # Size of the discriminator dataset. Half will be generated.
 disc_batch_size = 64  # Batch size for the discriminator.
 stroke_width = 4
 canvas_size = 256
@@ -67,7 +70,7 @@ class SharedNet(nn.Module):
     """
     A shared architecture for the value and policy networks.
     Enables easy pretraining if need be.
-    Takes in an image of 6 channels.
+    Takes in an image of 5 channels.
     """
 
     def __init__(self, size: int):
@@ -106,8 +109,8 @@ class ValueNet(nn.Module):
     ):
         nn.Module.__init__(self)
         self.shared_net = shared_net
-        self.v_layer2 = nn.Linear(shared_net.out_size, 64)
-        self.v_layer3 = nn.Linear(64, 1)
+        self.v_layer2 = nn.Linear(shared_net.out_size, 256)
+        self.v_layer3 = nn.Linear(256, 1)
         self.relu = nn.ReLU()
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
@@ -119,34 +122,34 @@ class ValueNet(nn.Module):
         return x
 
 
-class PolicyNet(nn.Module):
-    def __init__(
-        self,
-        action_count_cont: int,
-        action_count_discrete: int,
-        shared_net: SharedNet,
-    ):
-        nn.Module.__init__(self)
-        self.shared_net = shared_net
-        self.continuous = nn.Sequential(
-            nn.Linear(shared_net.out_size, 64),
-            nn.ReLU(),
-            nn.Linear(64, action_count_cont),
-            nn.Sigmoid(),
-        )
-        self.discrete = nn.Sequential(
-            nn.Linear(shared_net.out_size, 64),
-            nn.ReLU(),
-            nn.Linear(64, action_count_discrete),
-            nn.LogSoftmax(1),
-        )
-        self.relu = nn.ReLU()
+# class PolicyNet(nn.Module):
+#     def __init__(
+#         self,
+#         action_count_cont: int,
+#         action_count_discrete: int,
+#         shared_net: SharedNet,
+#     ):
+#         nn.Module.__init__(self)
+#         self.shared_net = shared_net
+#         self.continuous = nn.Sequential(
+#             nn.Linear(shared_net.out_size, 64),
+#             nn.ReLU(),
+#             nn.Linear(64, action_count_cont),
+#             nn.Sigmoid(),
+#         )
+#         self.discrete = nn.Sequential(
+#             nn.Linear(shared_net.out_size, 64),
+#             nn.ReLU(),
+#             nn.Linear(64, action_count_discrete),
+#             nn.LogSoftmax(1),
+#         )
+#         self.relu = nn.ReLU()
 
-    def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        x = self.shared_net(input)
-        cont = self.continuous(x)
-        disc = self.discrete(x)
-        return (cont, disc)
+#     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+#         x = self.shared_net(input)
+#         cont = self.continuous(x)
+#         disc = self.discrete(x)
+#         return (cont, disc)
 
 
 class Discriminator(nn.Module):
@@ -213,7 +216,7 @@ def gen_output(
 
 # Load dataset
 img_size = IMG_SIZE
-ds_path = Path("temp/form_outputs")
+ds_path = Path("temp/single_outputs")
 ref_imgs = []
 stroke_imgs = []
 print("Loading dataset...")
@@ -265,9 +268,7 @@ if args.eval:
         stroke_width=stroke_width,
         render_mode="human",
     )
-    p_net = PolicyNet(
-        action_count_cont=4, action_count_discrete=2, shared_net=SharedNet(img_size)
-    )
+    p_net = PolicyNet(IMG_SIZE)
     p_net.load_state_dict(torch.load("temp/p_net.pt"))
     with torch.no_grad():
         reward_total = 0.0
@@ -328,11 +329,8 @@ assert isinstance(act_space.spaces[1], gym.spaces.Discrete)
 action_count_cont = int(act_space.spaces[0].shape[0])
 action_count_discrete = int(act_space.spaces[1].n)
 v_net = ValueNet(SharedNet(img_size))
-p_net = PolicyNet(
-    action_count_cont=action_count_cont,
-    action_count_discrete=action_count_discrete,
-    shared_net=SharedNet(img_size),
-)
+p_net = PolicyNet(img_size)
+p_net.load_state_dict(torch.load("temp/stroke_net.pt"))  # For loading from pretraining
 v_opt = torch.optim.Adam(v_net.parameters(), lr=v_lr)
 p_opt = torch.optim.Adam(p_net.parameters(), lr=p_lr)
 
@@ -411,6 +409,7 @@ for step in tqdm(range(iterations), position=0):
     avg_disc_loss_real = 0.0
     avg_disc_loss_generated = 0.0
     d_net.train()
+
     for _ in tqdm(range(disc_steps), position=1):
         epoch_indices = torch.from_numpy(np.random.permutation(disc_ds_size // 2))
 
@@ -521,10 +520,10 @@ for step in tqdm(range(iterations), position=0):
                 test_env.render()
                 eval_obs = torch.Tensor(obs_)
                 steps_taken += 1
+                reward_total += reward
                 if eval_done or eval_trunc:
                     eval_obs = torch.Tensor(test_env.reset()[0])
                     break
-                reward_total += reward
 
     wandb.log(
         {
@@ -537,7 +536,6 @@ for step in tqdm(range(iterations), position=0):
         }
     )
 
-    if step % 1 == 0:
-        torch.save(p_net.state_dict(), "temp/p_net.pt")
-        torch.save(v_net.state_dict(), "temp/v_net.pt")
-        torch.save(d_net.state_dict(), "temp/d_net.pt")
+    torch.save(p_net.state_dict(), "temp/p_net.pt")
+    torch.save(v_net.state_dict(), "temp/v_net.pt")
+    torch.save(d_net.state_dict(), "temp/d_net.pt")

@@ -78,6 +78,7 @@ class RefStrokeEnv(gym.Env):
         self.render_mode = render_mode
         self.reward_model = reward_model
         self.last_score = 0.0
+        self.last_pen_down = True
         self.canvas_img = Image.new("1", (self.canvas_size, self.canvas_size))
         self.canvas_draw = ImageDraw.Draw(self.canvas_img)
         if self.render_mode == "human":
@@ -110,6 +111,12 @@ class RefStrokeEnv(gym.Env):
 
         score = 0.0
         reward = 0.0
+
+        # Penalize refusing to put down strokes
+        if not self.last_pen_down and not pen_down:
+            reward = -1.0
+        self.last_pen_down = pen_down
+
         if self.reward_model:
             reward_inpt = (
                 torch.from_numpy(
@@ -122,7 +129,7 @@ class RefStrokeEnv(gym.Env):
             )
             with torch.no_grad():
                 score = self.reward_model(reward_inpt.cuda()).item()
-            reward = score - self.last_score
+            reward += score - self.last_score
         self.last_score = score
 
         pos_channel = self.gen_pos_channel(
@@ -138,6 +145,7 @@ class RefStrokeEnv(gym.Env):
         index = random.randrange(0, len(self.ref_imgs))
         self.ref = self.ref_imgs[index]
         self.num_strokes = self.max_strokes
+        self.last_pen_down = True
         self.last_pos = rand_point(
             MIN_DIST, MAX_DIST, prev=(self.img_size // 2, self.img_size // 2)
         )
