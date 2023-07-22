@@ -194,7 +194,7 @@ def main():
 
     # Train model
     net = StrokeNet(img_size).cuda().train()
-    opt = torch.optim.Adam(net.parameters(), lr=0.0001)
+    opt = torch.optim.Adam(net.parameters(), lr=0.00003)
     batch_size = 512
     train_x = train_x.float()
     train_cont = train_cont.float()

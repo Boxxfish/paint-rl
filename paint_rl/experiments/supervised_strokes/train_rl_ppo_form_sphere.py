@@ -42,7 +42,7 @@ train_batch_size = 4096  # Minibatch size while training models.
 discount = 0.5  # Discount factor applied to rewards.
 lambda_ = 0.95  # Lambda for GAE.
 epsilon = 0.2  # Epsilon for importance sample clipping.
-max_eval_steps = 5  # Number of eval runs to average over.
+max_eval_steps = 20  # Number of eval runs to average over.
 eval_steps = 8  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
 p_lr = 0.00001  # Learning rate of the policy net.
@@ -83,7 +83,7 @@ parser.add_argument("--eval", action="store_true")
 args = parser.parse_args()
 
 # Load dataset
-ds_path = Path("temp/sphere_outputs")
+ds_path = Path("temp/single_outputs")
 ref_imgs = []
 stroke_imgs = []
 print("Loading dataset...")
@@ -132,7 +132,7 @@ if args.eval:
             for _ in range(max_eval_steps):
                 action_probs_cont, action_probs_disc = p_net(eval_obs.unsqueeze(0))
                 actions_cont = (
-                    Normal(loc=action_probs_cont.squeeze(), scale=0.001)
+                    Normal(loc=action_probs_cont.squeeze(), scale=0.00001)
                     .sample()
                     .numpy()
                 )
@@ -211,7 +211,7 @@ orig_action_scale = action_scale
 for step in tqdm(range(iterations), position=0):
     step_amount = (1.0 - step / iterations)
     action_scale = orig_action_scale * step_amount
-    dilation_size = int(4 * step_amount)
+    dilation_size = int(3 * step_amount)
     for i in range(num_envs):
         env.envs[i].unwrapped.set_dilation_size(dilation_size) # type: ignore
     test_env.set_dilation_size(dilation_size)

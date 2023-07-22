@@ -117,7 +117,7 @@ class OutlineStrokeEnv(gym.Env):
         self.counter = 0
         index = random.randrange(0, len(self.ref_imgs))
         img = self.ref_imgs[index]
-        self.num_strokes = 5
+        self.num_strokes = 20
         self.last_pos = rand_point(
             MIN_DIST, MAX_DIST, prev=(self.img_size // 2, self.img_size // 2)
         )

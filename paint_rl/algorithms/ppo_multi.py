@@ -90,11 +90,11 @@ def train_ppo(
             v_loss.backward()
             total_v_loss += v_loss.item()
 
-        if (i + 1) % gradient_steps == 0:
-            p_opt.step()
-            v_opt.step()
-            p_opt.zero_grad()
-            v_opt.zero_grad()
+            if (i + 1) % gradient_steps == 0:
+                p_opt.step()
+                v_opt.step()
+                p_opt.zero_grad()
+                v_opt.zero_grad()
 
     if device.type != "cpu":
         p_net.cpu()
