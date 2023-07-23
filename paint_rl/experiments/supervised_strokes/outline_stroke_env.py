@@ -103,14 +103,14 @@ class OutlineStrokeEnv(gym.Env):
             self.last_pos[1] - end_point[1]
         )
         if pixels_moved <= 4:
-            reward -= penalty
+            reward += penalty
         self.last_pos = end_point
 
         pos_channel = self.gen_pos_channel(
             self.last_pos[0], self.last_pos[1], self.img_size
         )
         obs = np.concatenate([np.stack([self.canvas, pos_channel]), self.ref], 0)
-
+        
         return obs, reward, done, trunc, {}
 
     def reset(self, **kwargs) -> tuple[np.ndarray, dict[str, Any]]:

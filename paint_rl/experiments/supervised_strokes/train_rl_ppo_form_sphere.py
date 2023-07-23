@@ -83,7 +83,7 @@ parser.add_argument("--eval", action="store_true")
 args = parser.parse_args()
 
 # Load dataset
-ds_path = Path("temp/single_outputs")
+ds_path = Path("temp/cylinder_single_outputs")
 ref_imgs = []
 stroke_imgs = []
 print("Loading dataset...")
@@ -149,6 +149,8 @@ if args.eval:
                 eval_obs = torch.Tensor(obs_)
                 steps_taken += 1
                 if eval_done or eval_trunc:
+                    print("Total reward:", reward_total)
+                    reward_total = 0
                     eval_obs = torch.Tensor(test_env.reset()[0])
                     break
                 reward_total += reward
@@ -211,7 +213,7 @@ orig_action_scale = action_scale
 for step in tqdm(range(iterations), position=0):
     step_amount = (1.0 - step / iterations)
     action_scale = orig_action_scale * step_amount
-    dilation_size = int(3 * step_amount)
+    dilation_size = int(2 * step_amount)
     for i in range(num_envs):
         env.envs[i].unwrapped.set_dilation_size(dilation_size) # type: ignore
     test_env.set_dilation_size(dilation_size)
