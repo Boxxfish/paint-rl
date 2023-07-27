@@ -124,7 +124,10 @@ class OutlineStrokeEnv(gym.Env):
         self.ref = img
         stroke_img = self.stroke_imgs[index]
         
-        self.ref_filter = binary_dilation(stroke_img, [(disk(1), self.dilation_size)])
+        if self.dilation_size > 0:
+            self.ref_filter = binary_dilation(stroke_img, [(disk(1), self.dilation_size)])
+        else:
+            self.ref_filter = stroke_img
 
         self.canvas = np.zeros([self.img_size, self.img_size])
         pos_channel = self.gen_pos_channel(

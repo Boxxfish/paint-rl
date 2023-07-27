@@ -78,8 +78,8 @@ def train_ppo(
                 actions_disc.squeeze()
             )
             new_act_probs = new_act_probs_cont + new_act_probs_disc
-            term1 = (new_act_probs - old_act_probs).exp() * advantages
-            term2 = (1.0 + epsilon * advantages.sign()) * advantages
+            term1 = (new_act_probs - old_act_probs).exp() * advantages.squeeze()
+            term2 = (1.0 + epsilon * advantages.squeeze().sign()) * advantages.squeeze()
             p_loss = -term1.min(term2).mean() / gradient_steps
             p_loss.backward()
             total_p_loss += p_loss.item()

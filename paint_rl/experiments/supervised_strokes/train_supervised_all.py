@@ -1,10 +1,9 @@
 """
 Trains a model on the supervised stroke task.
-This one trains a model to draw a cylinder.
+This one trains a model to draw a cube, a cylinder, or a sphere.
 """
 import json
 from argparse import ArgumentParser
-from math import cos, sin
 import random
 import numpy as np
 import torch
@@ -151,56 +150,26 @@ def main():
     cont_actions = []
     disc_actions = []
     print("Loading data.")
-    for i in tqdm(range(2000)):
+    for i in tqdm(range(4000)):
         try:
             img = (
-                Image.open(f"temp/cylinder_outputs/{i}/final.png")
+                Image.open(f"temp/all_outputs/{i}/final.png")
                 .convert("RGB")
                 .resize((img_size, img_size))
             )
             img_data = np.array(img).transpose(2, 0, 1) / 255.0
-            with open(f"temp/cylinder_outputs/{i}/strokes.json", "r") as f:
+            with open(f"temp/all_outputs/{i}/strokes.json", "r") as f:
                 path = json.load(f)
-            circles = path["circles"]
             stroke_img = Image.new("L", (img_size, img_size))
             stroke_draw = ImageDraw.Draw(stroke_img)
-            for circle in circles:
-                center = np.array(circle["center"]) / orig_img_size
-                a = int(circle["a"]) / orig_img_size
-                b = int(circle["b"]) / orig_img_size
-                rot = float(circle["rot"])
+            print(path)
 
-                p1 = (center - np.array([cos(rot), sin(rot)]) * b)
-                p2 = (center + np.array([-sin(rot), cos(rot)]) * a * 2)
-                p3 = (center + np.array([cos(rot), sin(rot)]) * b)
-                p4 = (center - np.array([-sin(rot), cos(rot)]) * a * 2)
-
-                # Stroke from anywhere to left point
-                rand_x = random.randrange(0, img_size)
-                rand_y = random.randrange(0, img_size)
-                while np.sqrt(((np.array([rand_x, rand_y]) - p1) ** 2).sum()) < 4:
-                    rand_x = random.randrange(0, img_size)
-                    rand_y = random.randrange(0, img_size)
-                pos_channel = gen_pos_channel(rand_x, rand_y, img_size)
-                ds_x.append(
-                    np.concatenate(
-                        [np.stack([np.zeros([img_size, img_size]), pos_channel]), img_data]
-                    )
-                )
-                cont_actions.append(
-                    np.concatenate(
-                        [
-                            (p1 + np.array([rand_x, rand_y]) / img_size) / 2.0,
-                            p1,
-                        ]
-                    )
-                )
-                disc_actions.append(0)
-
+            last_point = np.array(path["start"]).astype(float) / orig_img_size            
+            for c, d in zip(path["cont"], path["disc"]):
                 stroke(
-                    p1,
-                    p2,
-                    p3,
+                    last_point,
+                    np.array([c[0], c[1]]).astype(float) / orig_img_size,
+                    np.array([c[2], c[3]]).astype(float) / orig_img_size,
                     img_data,
                     stroke_img,
                     stroke_draw,
@@ -208,100 +177,11 @@ def main():
                     cont_actions,
                     disc_actions,
                     img_size,
+                    up=d == 0
                 )
-                stroke(
-                    p3,
-                    p4,
-                    p1,
-                    img_data,
-                    stroke_img,
-                    stroke_draw,
-                    ds_x,
-                    cont_actions,
-                    disc_actions,
-                    img_size,
-                )
-
-            # Stroke from top circle to bottom circle
-            first_c_index = 0 if circles[0]["center"][1] > circles[1]["center"][1] else 1
-            
-            circle_1 = circles[first_c_index]
-            center_1 = np.array(circle_1["center"]) / orig_img_size
-            rot_1 = float(circle_1["rot"])
-            a_1 = int(circle_1["a"]) / orig_img_size
-            b_1 = int(circle_1["b"]) / orig_img_size
-            if a_1 * sin(rot_1) > b_1 * -cos(rot_1):
-                c1_r = (center_1 - np.array([-sin(rot_1), cos(rot_1)]) * a_1)
-                c1_l = (center_1 + np.array([-sin(rot_1), cos(rot_1)]) * a_1)
-            else:
-                c1_r = (center_1 - np.array([cos(rot_1), sin(rot_1)]) * b_1)
-                c1_l = (center_1 + np.array([cos(rot_1), sin(rot_1)]) * b_1)
-
-            circle_2 = circles[first_c_index - 1]
-            center_2 = np.array(circle_2["center"]) / orig_img_size
-            rot_2 = float(circle_2["rot"])
-            a_2 = int(circle_2["a"]) / orig_img_size
-            b_2 = int(circle_2["b"]) / orig_img_size
-            if a_2 * sin(rot_2) > b_2 * -cos(rot_2):
-                c2_r = (center_2 - np.array([-sin(rot_2), cos(rot_2)]) * a_2)
-                c2_l = (center_2 + np.array([-sin(rot_2), cos(rot_2)]) * a_2)
-            else:
-                c2_r = (center_2 - np.array([cos(rot_2), sin(rot_2)]) * b_2)
-                c2_l = (center_2 + np.array([cos(rot_2), sin(rot_2)]) * b_2)
-
-            stroke(
-                p1,
-                (p1 + c1_l) / 2,
-                c1_l,
-                img_data,
-                stroke_img,
-                stroke_draw,
-                ds_x,
-                cont_actions,
-                disc_actions,
-                img_size,
-                up=True,
-            )
-            
-            stroke(
-                c1_l,
-                (c1_l + c2_l) / 2,
-                c2_l,
-                img_data,
-                stroke_img,
-                stroke_draw,
-                ds_x,
-                cont_actions,
-                disc_actions,
-                img_size,
-            )
-
-            stroke(
-                c2_l,
-                (c2_l + c1_r) / 2,
-                c1_r,
-                img_data,
-                stroke_img,
-                stroke_draw,
-                ds_x,
-                cont_actions,
-                disc_actions,
-                img_size,
-                up=True,
-            )
-
-            stroke(
-                c1_r,
-                (c1_r + c2_r) / 2,
-                c2_r,
-                img_data,
-                stroke_img,
-                stroke_draw,
-                ds_x,
-                cont_actions,
-                disc_actions,
-                img_size,
-            )
+                last_point = np.array([c[2], c[3]]) / orig_img_size      
+            # plt.imshow(ds_x[-1][:3].transpose(1, 2, 0))
+            # plt.show()
         except KeyboardInterrupt:
             quit()
         except Exception as e:
@@ -319,7 +199,7 @@ def main():
         project="paint-rl",
         entity=conf.entity,
         config={
-            "experiment": "supervised stroke rendering with cylinders",
+            "experiment": "supervised stroke rendering with cubes",
         },
     )
 

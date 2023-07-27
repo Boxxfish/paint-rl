@@ -45,7 +45,7 @@ epsilon = 0.2  # Epsilon for importance sample clipping.
 max_eval_steps = 20  # Number of eval runs to average over.
 eval_steps = 8  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
-p_lr = 0.00001  # Learning rate of the policy net.
+p_lr = 0.0001  # Learning rate of the policy net.
 action_scale = 0.05  # Scale for actions.
 device = torch.device("cuda")  # Device to use during training.
 
@@ -83,7 +83,7 @@ parser.add_argument("--eval", action="store_true")
 args = parser.parse_args()
 
 # Load dataset
-ds_path = Path("temp/cylinder_single_outputs")
+ds_path = Path("temp/all_outputs")
 ref_imgs = []
 stroke_imgs = []
 print("Loading dataset...")
