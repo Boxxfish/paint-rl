@@ -26,7 +26,7 @@ from paint_rl.algorithms.rollout_buffer import RolloutBuffer, ActionRolloutBuffe
 from paint_rl.conf import entity
 from paint_rl.experiments.supervised_strokes.gen_supervised import IMG_SIZE
 from paint_rl.experiments.supervised_strokes.outline_stroke_env import OutlineStrokeEnv
-from paint_rl.experiments.supervised_strokes.train_supervised_sphere import (
+from paint_rl.experiments.supervised_strokes.train_supervised_all import (
     StrokeNet as PolicyNet,
     SharedNet,
 )
@@ -37,16 +37,16 @@ _: Any
 num_envs = 256  # Number of environments to step through at once during sampling.
 train_steps = 64  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs/
 iterations = 1000  # Number of sample/train iterations.
-train_iters = 1  # Number of passes over the samples collected.
+train_iters = 2  # Number of passes over the samples collected.
 train_batch_size = 4096  # Minibatch size while training models.
-discount = 0.5  # Discount factor applied to rewards.
+discount = 0.9  # Discount factor applied to rewards.
 lambda_ = 0.95  # Lambda for GAE.
 epsilon = 0.2  # Epsilon for importance sample clipping.
 max_eval_steps = 20  # Number of eval runs to average over.
 eval_steps = 8  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
 p_lr = 0.0001  # Learning rate of the policy net.
-action_scale = 0.05  # Scale for actions.
+action_scale = 0.1  # Scale for actions.
 device = torch.device("cuda")  # Device to use during training.
 
 

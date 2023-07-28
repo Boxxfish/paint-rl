@@ -17,6 +17,14 @@ from paint_rl.experiments.stroke_gan.ref_stroke_env import RefStrokeEnv
 from matplotlib import pyplot as plt  # type: ignore
 from paint_rl.experiments.supervised_strokes.gen_supervised import gen_curve_points
 
+class ResBlock(nn.Module):
+    def __init__(self, module: nn.Module):
+        nn.Module.__init__(self)
+        self.module = module
+    
+    def forward(self, x):
+        return self.module(x) + x
+    
 
 class SharedNet(nn.Module):
     """
@@ -27,10 +35,30 @@ class SharedNet(nn.Module):
     def __init__(self, size: int):
         nn.Module.__init__(self)
         self.net = nn.Sequential(
-            nn.Conv2d(5 + 2, 64, 5, stride=2),
-            nn.ReLU(),
+            nn.Conv2d(5 + 2, 32, 7, stride=2),
+            ResBlock(nn.Sequential(
+                nn.ReLU(),
+                nn.Conv2d(32, 32, 5, padding=2),
+                nn.ReLU(),
+                nn.Conv2d(32, 32, 5, padding=2),
+                nn.ReLU(),
+            )),
+            nn.Conv2d(32, 64, 3, stride=2),
+            ResBlock(nn.Sequential(
+                nn.ReLU(),
+                nn.Conv2d(64, 64, 3, padding=1),
+                nn.ReLU(),
+                nn.Conv2d(64, 64, 3, padding=1),
+                nn.ReLU(),
+            )),
             nn.Conv2d(64, 128, 3, stride=2),
-            nn.ReLU(),
+            ResBlock(nn.Sequential(
+                nn.ReLU(),
+                nn.Conv2d(128, 128, 3, padding=1),
+                nn.ReLU(),
+                nn.Conv2d(128, 128, 3, padding=1),
+                nn.ReLU(),
+            )),
             nn.Conv2d(128, 256, 3, stride=2),
             nn.ReLU(),
         )
@@ -150,7 +178,7 @@ def main():
     cont_actions = []
     disc_actions = []
     print("Loading data.")
-    for i in tqdm(range(4000)):
+    for i in tqdm(range(8000)):
         try:
             img = (
                 Image.open(f"temp/all_outputs/{i}/final.png")
@@ -162,7 +190,6 @@ def main():
                 path = json.load(f)
             stroke_img = Image.new("L", (img_size, img_size))
             stroke_draw = ImageDraw.Draw(stroke_img)
-            print(path)
 
             last_point = np.array(path["start"]).astype(float) / orig_img_size            
             for c, d in zip(path["cont"], path["disc"]):
@@ -190,7 +217,7 @@ def main():
     cont_actions = torch.from_numpy(np.stack(cont_actions))
     disc_actions = torch.from_numpy(np.stack(disc_actions))
     train_x, valid_x, train_cont, valid_cont, train_disc, valid_disc = train_test_split(
-        ds_x, cont_actions, disc_actions, train_size=0.8
+        ds_x, cont_actions, disc_actions, train_size=0.95
     )
     del ds_x, cont_actions, disc_actions
     train_size = train_x.shape[0]
@@ -206,7 +233,7 @@ def main():
     # Train model
     net = StrokeNet(img_size).cuda().train()
     opt = torch.optim.Adam(net.parameters(), lr=0.0001)
-    batch_size = 512
+    batch_size = 128
     train_x = train_x.float()
     train_cont = train_cont.float()
     train_disc = train_disc

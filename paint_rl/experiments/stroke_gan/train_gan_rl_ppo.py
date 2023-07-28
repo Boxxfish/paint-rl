@@ -30,7 +30,7 @@ from paint_rl.algorithms.rollout_buffer import ActionRolloutBuffer, RolloutBuffe
 from paint_rl.conf import entity
 from paint_rl.experiments.supervised_strokes.gen_supervised import IMG_SIZE
 from paint_rl.experiments.stroke_gan.ref_stroke_env import RefStrokeEnv
-from paint_rl.experiments.supervised_strokes.train_supervised_cube import (
+from paint_rl.experiments.supervised_strokes.train_supervised_all import (
     StrokeNet as PolicyNet,
 )
 
@@ -216,7 +216,7 @@ def gen_output(
 
 # Load dataset
 img_size = IMG_SIZE
-ds_path = Path("temp/single_outputs")
+ds_path = Path("temp/all_outputs")
 ref_imgs = []
 stroke_imgs = []
 print("Loading dataset...")
