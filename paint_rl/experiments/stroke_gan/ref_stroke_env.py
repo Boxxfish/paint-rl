@@ -43,7 +43,7 @@ class RefStrokeEnv(gym.Env):
         reward_model: Optional[nn.Module],
         render_mode: Optional[str] = None,
         stroke_width=1,
-        max_strokes=30,
+        max_strokes=50,
     ) -> None:
         """
         canvas_size: Original canvas size. This will be downsampled to `img_size`.
@@ -52,7 +52,7 @@ class RefStrokeEnv(gym.Env):
         reward_model: Classifier that acts as a reward signal.
         """
         super().__init__()
-        self.observation_space = gym.spaces.Box(0.0, 1.0, [5, img_size, img_size])
+        self.observation_space = gym.spaces.Box(0.0, 1.0, [7, img_size, img_size])
         self.action_space = gym.spaces.Tuple(
             [
                 gym.spaces.Box(
@@ -81,6 +81,8 @@ class RefStrokeEnv(gym.Env):
         self.last_pen_down = True
         self.canvas_img = Image.new("1", (self.canvas_size, self.canvas_size))
         self.canvas_draw = ImageDraw.Draw(self.canvas_img)
+        self.prev_frame = np.zeros([2, self.img_size, self.img_size])
+        self.mask = np.random.uniform(0.0, 1.0, [img_size, img_size]) < 0.9
         if self.render_mode == "human":
             pygame.init()
             self.screen = pygame.display.set_mode(
@@ -93,14 +95,18 @@ class RefStrokeEnv(gym.Env):
         action: Tuple[np.ndarray, int],
     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         cont_action, disc_action = action
-        cont_action = np.clip(cont_action.squeeze() * self.canvas_size, 0, self.canvas_size - 1)
+        cont_action = np.clip(
+            cont_action.squeeze() * self.canvas_size, 0, self.canvas_size - 1
+        )
         mid_point = (int(cont_action[0]), int(cont_action[1]))
         end_point = (int(cont_action[2]), int(cont_action[3]))
         pen_down = disc_action == 1
         if pen_down:
             points = gen_curve_points(self.last_pos, mid_point, end_point)
             self.canvas_draw.line(points, 1, width=self.stroke_width)
-            scaled_canvas = self.canvas_img.convert("RGB").resize((self.img_size, self.img_size), resample=Image.Resampling.BILINEAR)
+            scaled_canvas = self.canvas_img.convert("RGB").resize(
+                (self.img_size, self.img_size), resample=Image.Resampling.BILINEAR
+            )
             new_stroke = np.array(scaled_canvas).transpose(2, 0, 1)[1] / 255.0
             self.canvas = new_stroke
 
@@ -121,7 +127,7 @@ class RefStrokeEnv(gym.Env):
             reward_inpt = (
                 torch.from_numpy(
                     np.concatenate(
-                        [self.ref, np.array(self.canvas)[np.newaxis, ...]], 0
+                        [self.ref, (np.array(self.canvas) * self.mask)[np.newaxis, ...]], 0
                     )
                 )
                 .unsqueeze(0)
@@ -132,10 +138,21 @@ class RefStrokeEnv(gym.Env):
             reward += score - self.last_score
         self.last_score = score
 
+        # If reward model is very certain, mark as done
+        if score >= 0.9 and self.counter >= 4:
+            print("Threshold hit! Score:", score)
+            done = True
+        # print(score)
+        # input()
+
         pos_channel = self.gen_pos_channel(
-            int(self.last_pos[0] * (self.img_size / self.canvas_size)), int(self.last_pos[1] * (self.img_size / self.canvas_size)), self.img_size
+            int(self.last_pos[0] * (self.img_size / self.canvas_size)),
+            int(self.last_pos[1] * (self.img_size / self.canvas_size)),
+            self.img_size,
         )
-        obs = np.concatenate([np.stack([self.canvas, pos_channel]), self.ref])
+        this_frame = np.stack([self.canvas, pos_channel])
+        obs = np.concatenate([self.prev_frame, this_frame, self.ref])
+        self.prev_frame = this_frame
 
         return obs, reward, done, False, {}
 
@@ -146,14 +163,20 @@ class RefStrokeEnv(gym.Env):
         self.ref = self.ref_imgs[index]
         self.num_strokes = self.max_strokes
         self.last_pen_down = True
-        self.last_pos = rand_point(
-            MIN_DIST, MAX_DIST, prev=(self.img_size // 2, self.img_size // 2)
+        self.last_pos = (
+            random.randrange(0, self.canvas_size),
+            random.randrange(0, self.canvas_size),
         )
 
         pos_channel = self.gen_pos_channel(
-            int(self.last_pos[0] * (self.img_size / self.canvas_size)), int(self.last_pos[1] * (self.img_size / self.canvas_size)), self.img_size
+            int(self.last_pos[0] * (self.img_size / self.canvas_size)),
+            int(self.last_pos[1] * (self.img_size / self.canvas_size)),
+            self.img_size,
         )
-        obs = np.concatenate([np.stack([self.canvas, pos_channel]), self.ref])
+        self.prev_frame = np.zeros([2, self.img_size, self.img_size])
+        this_frame = np.stack([self.canvas, pos_channel])
+        obs = np.concatenate([self.prev_frame, this_frame, self.ref])
+        self.prev_frame = this_frame
         self.canvas_draw.rectangle((0, 0, self.canvas_size, self.canvas_size), 0)
         reward_inpt = (
             torch.from_numpy(
@@ -176,12 +199,12 @@ class RefStrokeEnv(gym.Env):
             pos_x = int(self.last_pos[0] * (self.img_size / self.canvas_size))
             pos_y = int(self.last_pos[1] * (self.img_size / self.canvas_size))
             pos_channel[pos_y][pos_x] = 1
-            img = (
-                np.stack(
-                    [self.canvas, self.ref.mean(0, keepdims=False), pos_channel]
-                ).transpose(2, 1, 0)
-                * 255.0
-            )
+
+            img = 0.5 + self.ref / 2.0
+            strokes = 1.0 - self.canvas
+            img = img * strokes
+
+            img = img.transpose(2, 1, 0) * 255.0
             img_surf = pygame.surfarray.make_surface(img)
             pygame.transform.scale(
                 img_surf,

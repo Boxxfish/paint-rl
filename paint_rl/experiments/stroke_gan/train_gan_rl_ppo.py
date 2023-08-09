@@ -37,24 +37,24 @@ from paint_rl.experiments.supervised_strokes.train_supervised_all import (
 _: Any
 
 # Hyperparameters
-num_envs = 64  # Number of environments to step through at once during sampling.
-train_steps = 32  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
-iterations = 100  # Number of sample/train iterations.
+num_envs = 32  # Number of environments to step through at once during sampling.
+train_steps = 256  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
+iterations = 1000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
-train_batch_size = 2048  # Minibatch size while training models.
+train_batch_size = 1024  # Minibatch size while training models.
 discount = 0.99  # Discount factor applied to rewards.
 lambda_ = 0.99  # Lambda for GAE.
-epsilon = 0.1  # Epsilon for importance sample clipping.
-max_eval_steps = 30  # Number of eval runs to average over.
-eval_steps = 1  # Max number of steps to take during each eval run.
+epsilon = 0.2  # Epsilon for importance sample clipping.
+max_eval_steps = 300  # Number of eval runs to average over.
+eval_steps = 4  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
-p_lr = 0.0001  # Learning rate of the policy net.
+p_lr = 0.00001  # Learning rate of the policy net.
 d_lr = 0.001  # Learning rate of the discriminator.
-action_scale = 0.02  # Scale for actions.
-gen_steps = 10  # Number of generator steps per iteration.
-disc_steps = 1  # Number of discriminator steps per iteration.
-disc_ds_size = 512  # Size of the discriminator dataset. Half will be generated.
-disc_batch_size = 64  # Batch size for the discriminator.
+action_scale = 0.04  # Scale for actions.
+gen_steps = 4  # Number of generator steps per iteration.
+disc_steps = 2  # Number of discriminator steps per iteration.
+disc_ds_size = 2048  # Size of the discriminator dataset. Half will be generated.
+disc_batch_size = 128  # Batch size for the discriminator.
 stroke_width = 4
 canvas_size = 256
 device = torch.device("cuda")  # Device to use during training.
@@ -62,6 +62,7 @@ device = torch.device("cuda")  # Device to use during training.
 # Argument parsing
 parser = ArgumentParser()
 parser.add_argument("--eval", action="store_true")
+parser.add_argument("--test")
 parser.add_argument("--resume", action="store_true")
 args = parser.parse_args()
 
@@ -77,7 +78,7 @@ class SharedNet(nn.Module):
         nn.Module.__init__(self)
         self.out_size = 512
         self.net = nn.Sequential(
-            nn.Conv2d(5 + 2, 128, 3, 2),
+            nn.Conv2d(7 + 2, 128, 3, 2),
             nn.ReLU(),
             nn.Conv2d(128, 256, 3, 2),
             nn.ReLU(),
@@ -164,25 +165,25 @@ class Discriminator(nn.Module):
     ):
         nn.Module.__init__(self)
         self.net = nn.Sequential(
-            spectral_norm(nn.Conv2d(4, 128, 3, 2, padding=1)),
+            spectral_norm(nn.Conv2d(4, 32, 3, 2, padding=1)),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(0.2),
+            spectral_norm(nn.Conv2d(32, 64, 3, 2, padding=1)),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(0.2),
+            spectral_norm(nn.Conv2d(64, 128, 3, 4, padding=1)),
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.2),
-            spectral_norm(nn.Conv2d(128, 256, 3, 2, padding=1)),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(0.2),
-            spectral_norm(nn.Conv2d(256, 512, 3, 2, padding=1)),
-            nn.BatchNorm2d(512),
-            nn.LeakyReLU(0.2),
-            spectral_norm(nn.Conv2d(512, 1024, 3, 2, padding=1)),
-            nn.BatchNorm2d(1024),
-            nn.LeakyReLU(0.2),
-            nn.Flatten(),
-            spectral_norm(nn.Linear(1024 * 4**2, 1)),
+        )
+        self.net2 = nn.Sequential(            
+            nn.Linear(128, 1),
             nn.Sigmoid(),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.net(x)
+        x = torch.max(torch.max(x, 3).values, 2).values
+        x = self.net2(x)
         return x
 
 
@@ -193,24 +194,26 @@ def gen_output(
     stroke_width: int,
     img_size: int,
     action_scale: float,
+    d_net: nn.Module,
 ) -> np.ndarray:
     """
     Given a reference image, returns the canvas with generated strokes.
     """
-    temp_env = RefStrokeEnv(
-        canvas_size, img_size, [ref], None, stroke_width=stroke_width
-    )
-    obs_, _ = temp_env.reset()
-    obs = torch.from_numpy(obs_).float()
-    done = False
-    while not done:
-        action_probs_cont, action_probs_disc = p_net(obs.unsqueeze(0))
-        cont_distr = Normal(loc=action_probs_cont.squeeze(), scale=action_scale)
-        disc_distr = Categorical(logits=action_probs_disc.squeeze())
-        action_cont = cont_distr.sample().numpy()
-        action_disc = disc_distr.sample().numpy()
-        obs_, _, done, _, _ = temp_env.step((action_cont, action_disc))
+    with torch.no_grad():
+        temp_env = RefStrokeEnv(
+            canvas_size, img_size, [ref], d_net, stroke_width=stroke_width
+        )
+        obs_, _ = temp_env.reset()
         obs = torch.from_numpy(obs_).float()
+        done = False
+        while not done:
+            action_probs_cont, action_probs_disc = p_net(obs.unsqueeze(0))
+            cont_distr = Normal(loc=action_probs_cont.squeeze(), scale=action_scale)
+            disc_distr = Categorical(logits=action_probs_disc.squeeze())
+            action_cont = cont_distr.sample().numpy()
+            action_disc = disc_distr.sample().numpy()
+            obs_, _, done, _, _ = temp_env.step((action_cont, action_disc))
+            obs = torch.from_numpy(obs_).float()
     return np.array(temp_env.canvas)
 
 
@@ -221,16 +224,18 @@ ref_imgs = []
 stroke_imgs = []
 print("Loading dataset...")
 
-for dir in tqdm(islice(ds_path.iterdir(), 6000)):
-    stroke_img = Image.open(dir / "outlines.png")
-    stroke_img = stroke_img.resize(
-        (img_size, img_size), resample=Image.Resampling.BILINEAR
-    )
-    stroke_imgs.append(np.array(stroke_img).transpose([2, 0, 1])[1] / 255.0)
-    ref_img = Image.open(dir / "final.png")
-    ref_img = ref_img.resize((img_size, img_size))
-    ref_img = ref_img.convert("RGB")
-    ref_imgs.append(np.array(ref_img).transpose([2, 0, 1]) / 255.0)
+if not args.test:
+    amount = 100 if args.eval else 10000
+    for dir in tqdm(islice(ds_path.iterdir(), amount)):
+        stroke_img = Image.open(dir / "outlines.png")
+        stroke_img = stroke_img.resize(
+            (img_size, img_size), resample=Image.Resampling.BILINEAR
+        )
+        stroke_imgs.append(np.array(stroke_img).transpose([2, 0, 1])[1] / 255.0)
+        ref_img = Image.open(dir / "final.png")
+        ref_img = ref_img.resize((img_size, img_size))
+        ref_img = ref_img.convert("RGB")
+        ref_imgs.append(np.array(ref_img).transpose([2, 0, 1]) / 255.0)
 
 # Initialize discriminator
 d_net = Discriminator()
@@ -242,7 +247,7 @@ env = gym.vector.SyncVectorEnv(
     [
         lambda: NormalizeReward(
             RefStrokeEnv(
-                canvas_size, img_size, ref_imgs, d_net, stroke_width=stroke_width
+                canvas_size, img_size, ref_imgs, d_net, stroke_width=stroke_width, max_strokes=50
             )
         )
         for _ in range(num_envs)
@@ -255,18 +260,68 @@ test_env = RefStrokeEnv(
     d_net,
     stroke_width=stroke_width,
     render_mode="human",
+    max_strokes=50,
 )
 
 # If evaluating, run the sim
 if args.eval:
     eval_done = False
+    d_net.load_state_dict(torch.load("temp/d_net.pt"))
     test_env = RefStrokeEnv(
         canvas_size,
         img_size,
         ref_imgs,
+        d_net,
+        stroke_width=stroke_width,
+        render_mode="human",
+    )
+    p_net = PolicyNet(IMG_SIZE)
+    p_net.load_state_dict(torch.load("temp/p_net.pt"))
+    with torch.no_grad():
+        reward_total = 0.0
+        eval_obs = torch.Tensor(test_env.reset()[0])
+        while True:
+            steps_taken = 0
+            for _ in range(max_eval_steps):
+                action_probs_cont, action_probs_disc = p_net(eval_obs.unsqueeze(0))
+                actions_cont = (
+                    Normal(loc=action_probs_cont.squeeze(), scale=0.001)
+                    .sample()
+                    .numpy()
+                )
+                actions_disc = (
+                    Categorical(logits=action_probs_disc.squeeze())
+                    .sample()
+                    .unsqueeze(-1)
+                    .numpy()
+                )
+                obs_, reward, eval_done, eval_trunc, _ = test_env.step(
+                    (actions_cont, actions_disc)
+                )
+                test_env.render()
+                eval_obs = torch.Tensor(obs_)
+                steps_taken += 1
+                if eval_done or eval_trunc:
+                    eval_obs = torch.Tensor(test_env.reset()[0])
+                    break
+                reward_total += reward
+
+# If testing, run the sim
+if args.test:
+    test_img = Image.open(args.test)
+    test_img = test_img.resize((img_size, img_size))
+    test_img = test_img.convert("RGB")
+    test_img = np.array(test_img).transpose([2, 0, 1]) / 255.0
+
+    eval_done = False
+    test_env = RefStrokeEnv(
+        canvas_size,
+        img_size,
+        [test_img],
         None,
         stroke_width=stroke_width,
         render_mode="human",
+        max_strokes=100
     )
     p_net = PolicyNet(IMG_SIZE)
     p_net.load_state_dict(torch.load("temp/p_net.pt"))
@@ -360,6 +415,7 @@ buffer_disc = ActionRolloutBuffer(
 obs = torch.Tensor(env.reset()[0])
 done = False
 orig_action_scale = action_scale
+masks = np.random.uniform(0.0, 1.0, [disc_ds_size // 2, img_size, img_size]) < 0.9
 for step in tqdm(range(iterations), position=0):
     # Training the discriminator
     ds_indices = np.random.permutation(len(ref_imgs))[:disc_ds_size].tolist()
@@ -367,7 +423,7 @@ for step in tqdm(range(iterations), position=0):
         [ref_imgs[i] for i in ds_indices]
     )  # Shape: (disc_ds_size, 3, img_size, img_size)
     ground_truth = np.expand_dims(
-        np.stack([stroke_imgs[i] for i in ds_indices[: disc_ds_size // 2]]), 1
+        np.stack([stroke_imgs[i] for i in ds_indices[: disc_ds_size // 2]])* masks, 1
     )  # Shape: (disc_ds_size / 2, 1 img_size, img_size)
     generated = np.expand_dims(
         np.stack(
@@ -379,10 +435,11 @@ for step in tqdm(range(iterations), position=0):
                     stroke_width,
                     img_size,
                     action_scale,
+                    d_net,
                 )
-                for i in ds_indices[disc_ds_size // 2 :]
+                for i in tqdm(ds_indices[disc_ds_size // 2 :])
             ]
-        ),
+        ) * masks,
         1,
     )  # Shape: (disc_ds_size / 2, 1 img_size, img_size)
     ds_x_real = (
@@ -393,7 +450,7 @@ for step in tqdm(range(iterations), position=0):
         .to(device)
     )  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
     ds_y_real = (
-        torch.from_numpy(np.random.normal(0.9, 0.01, [disc_ds_size // 2]))
+        torch.from_numpy(np.ones([disc_ds_size // 2]))
         .float()
         .to(device)
     )
@@ -413,6 +470,18 @@ for step in tqdm(range(iterations), position=0):
     for _ in tqdm(range(disc_steps), position=1):
         epoch_indices = torch.from_numpy(np.random.permutation(disc_ds_size // 2))
 
+        # Train on generated
+        ds_x_generated = ds_x_generated[epoch_indices]
+        for i in range(num_batches):
+            batch_x = ds_x_generated[i * disc_batch_size : (i + 1) * disc_batch_size]
+            batch_y = ds_y_generated[i * disc_batch_size : (i + 1) * disc_batch_size]
+            d_opt.zero_grad()
+            pred_y = d_net(batch_x).squeeze(1)
+            loss = d_crit(pred_y, batch_y)
+            avg_disc_loss_generated += loss.item()
+            loss.backward()
+            d_opt.step()
+
         # Train on real
         ds_x_real = ds_x_real[epoch_indices]
         for i in range(num_batches):
@@ -425,22 +494,23 @@ for step in tqdm(range(iterations), position=0):
             loss.backward()
             d_opt.step()
 
-        # Train on generated
-        ds_x_generated = ds_x_generated[epoch_indices]
-        for i in range(num_batches):
-            batch_x = ds_x_generated[i * disc_batch_size : (i + 1) * disc_batch_size]
-            batch_y = ds_y_generated[i * disc_batch_size : (i + 1) * disc_batch_size]
-            d_opt.zero_grad()
-            pred_y = d_net(batch_x).squeeze(1)
-            loss = d_crit(pred_y, batch_y)
-            avg_disc_loss_generated += loss.item()
-            loss.backward()
-            d_opt.step()
+        # with torch.no_grad():
+        #     for i in range(5):
+        #         pred = d_net(ds_x_real[i].unsqueeze(0)).squeeze(0).item()
+        #         print("Prediction: ", pred)
+        #         plt.imshow(ds_x_real[i][3].cpu())
+        #         plt.show()
+        #         pred = d_net(ds_x_generated[i].unsqueeze(0)).squeeze(0).item()
+        #         print("Prediction: ", pred)
+        #         plt.imshow(ds_x_generated[i][3].cpu())
+        #         plt.show()
     avg_disc_loss_real /= disc_steps * num_batches
     avg_disc_loss_generated /= disc_steps * num_batches
     d_net.eval()
 
     # Training the generator
+    if step < 4:
+        continue
     total_p_loss = 0.0
     total_v_loss = 0.0
     for _ in tqdm(range(gen_steps), position=1):

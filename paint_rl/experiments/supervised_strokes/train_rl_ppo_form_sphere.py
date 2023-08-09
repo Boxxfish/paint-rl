@@ -34,19 +34,19 @@ from paint_rl.experiments.supervised_strokes.train_supervised_all import (
 _: Any
 
 # Hyperparameters
-num_envs = 256  # Number of environments to step through at once during sampling.
+num_envs = 128  # Number of environments to step through at once during sampling.
 train_steps = 64  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs/
 iterations = 1000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
-train_batch_size = 4096  # Minibatch size while training models.
-discount = 0.9  # Discount factor applied to rewards.
+train_batch_size = 1024  # Minibatch size while training models.
+discount = 0.5  # Discount factor applied to rewards.
 lambda_ = 0.95  # Lambda for GAE.
 epsilon = 0.2  # Epsilon for importance sample clipping.
-max_eval_steps = 20  # Number of eval runs to average over.
+max_eval_steps = 100  # Number of eval runs to average over.
 eval_steps = 8  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
-p_lr = 0.0001  # Learning rate of the policy net.
-action_scale = 0.1  # Scale for actions.
+p_lr = 0.000001  # Learning rate of the policy net.
+action_scale = 0.02  # Scale for actions.
 device = torch.device("cuda")  # Device to use during training.
 
 
@@ -57,7 +57,7 @@ class ValueNet(nn.Module):
         self.v_layer3 = nn.Linear(256, 1)
         self.relu = nn.ReLU()
         self.shared_net = nn.Sequential(
-            nn.Conv2d(5, 64, 3, stride=2),
+            nn.Conv2d(7, 64, 3, stride=2),
             nn.ReLU(),
             nn.Conv2d(64, 128, 3, stride=2),
             nn.ReLU(),
@@ -80,6 +80,7 @@ img_size = IMG_SIZE
 # Argument parsing
 parser = ArgumentParser()
 parser.add_argument("--eval", action="store_true")
+parser.add_argument("--test")
 args = parser.parse_args()
 
 # Load dataset
@@ -88,25 +89,26 @@ ref_imgs = []
 stroke_imgs = []
 print("Loading dataset...")
 
-for dir in tqdm(ds_path.iterdir()):
-    stroke_img = Image.open(dir / "outlines.png")
-    stroke_img = stroke_img.resize((img_size, img_size))
-    stroke_imgs.append(np.array(stroke_img).transpose([2, 0, 1])[1] > 20)
-    ref_img = Image.open(dir / "final.png")
-    ref_img = ref_img.resize((img_size, img_size))
-    ref_img = ref_img.convert("RGB")
-    ref_imgs.append(np.array(ref_img).transpose([2, 0, 1]) / 255.0)
+if not args.test:
+    for dir in tqdm(ds_path.iterdir()):
+        stroke_img = Image.open(dir / "outlines.png")
+        stroke_img = stroke_img.resize((img_size, img_size))
+        stroke_imgs.append(np.array(stroke_img).transpose([2, 0, 1])[1] > 50)
+        ref_img = Image.open(dir / "final.png")
+        ref_img = ref_img.resize((img_size, img_size))
+        ref_img = ref_img.convert("RGB")
+        ref_imgs.append(np.array(ref_img).transpose([2, 0, 1]) / 255.0)
 
 env = gym.vector.SyncVectorEnv(
     [
         lambda: NormalizeReward(
-            OutlineStrokeEnv(img_size, ref_imgs=ref_imgs, stroke_imgs=stroke_imgs)
+            OutlineStrokeEnv(img_size, ref_imgs=ref_imgs, stroke_imgs=stroke_imgs, dilation_size=0)
         )
         for _ in range(num_envs)
     ]
 )
 test_env = OutlineStrokeEnv(
-    img_size, ref_imgs=ref_imgs[:20], stroke_imgs=stroke_imgs[:20], render_mode="human"
+    img_size, ref_imgs=ref_imgs[:20], stroke_imgs=stroke_imgs[:20], render_mode="human", dilation_size=0
 )
 
 # If evaluating, run the sim
@@ -154,6 +156,58 @@ if args.eval:
                     eval_obs = torch.Tensor(test_env.reset()[0])
                     break
                 reward_total += reward
+
+# If evaluating on test image, run the sim
+if args.test:
+    test_img = Image.open(args.test)
+    test_img = test_img.resize((img_size, img_size))
+    test_img = test_img.convert("RGB")
+    test_img = np.array(test_img).transpose([2, 0, 1]) / 255.0
+    
+    eval_done = False
+    test_env = OutlineStrokeEnv(
+        img_size, ref_imgs=[test_img], stroke_imgs=[test_img[0]], render_mode="human"
+    )
+    obs_space = test_env.observation_space
+    assert obs_space.shape is not None
+    obs_shape = torch.Size(obs_space.shape)
+    act_space = env.single_action_space
+    assert isinstance(act_space, gym.spaces.Tuple)
+    assert isinstance(act_space.spaces[0], gym.spaces.Box)
+    assert isinstance(act_space.spaces[1], gym.spaces.Discrete)
+    p_net = PolicyNet(img_size)
+    p_net.load_state_dict(torch.load("temp/p_net.pt"))
+    with torch.no_grad():
+        reward_total = 0.0
+        eval_obs = torch.Tensor(test_env.reset()[0])
+        while True:
+            steps_taken = 0
+            for _ in range(max_eval_steps):
+                action_probs_cont, action_probs_disc = p_net(eval_obs.unsqueeze(0))
+                actions_cont = (
+                    Normal(loc=action_probs_cont.squeeze(), scale=0.00001)
+                    .sample()
+                    .numpy()
+                )
+                actions_disc = (
+                    Categorical(logits=action_probs_disc.squeeze())
+                    .sample()
+                    .unsqueeze(-1)
+                    .numpy()
+                )
+                obs_, reward, eval_done, eval_trunc, _ = test_env.step(
+                    (actions_cont, actions_disc)
+                )
+                test_env.render()
+                eval_obs = torch.Tensor(obs_)
+                steps_taken += 1
+                if eval_done or eval_trunc:
+                    print("Total reward:", reward_total)
+                    reward_total = 0
+                    eval_obs = torch.Tensor(test_env.reset()[0])
+                    break
+                reward_total += reward
+
 del ref_imgs
 wandb.init(
     project="paint-rl",
@@ -210,13 +264,10 @@ buffer_disc = ActionRolloutBuffer(
 obs = torch.Tensor(env.reset()[0])
 done = False
 orig_action_scale = action_scale
+best_reward = -10.0
 for step in tqdm(range(iterations), position=0):
     step_amount = (1.0 - step / iterations)
     action_scale = orig_action_scale * step_amount
-    dilation_size = int(2 * step_amount)
-    for i in range(num_envs):
-        env.envs[i].unwrapped.set_dilation_size(dilation_size) # type: ignore
-    test_env.set_dilation_size(dilation_size)
 
     # Collect experience for a number of steps and store it in the buffer
     with torch.no_grad():
@@ -304,6 +355,9 @@ for step in tqdm(range(iterations), position=0):
         }
     )
 
-    if step % 5 == 0:
-        torch.save(p_net.state_dict(), "temp/p_net.pt")
-        torch.save(v_net.state_dict(), "temp/v_net.pt")
+    torch.save(p_net.state_dict(), "temp/p_net.pt")
+    torch.save(v_net.state_dict(), "temp/v_net.pt")
+    if reward_total / eval_steps > best_reward:
+        torch.save(p_net.state_dict(), "temp/p_net_best.pt")
+        torch.save(v_net.state_dict(), "temp/v_net_best.pt")
+

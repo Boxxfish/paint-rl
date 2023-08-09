@@ -14,7 +14,7 @@ from paint_rl.experiments.supervised_strokes.gen_supervised import (
     rand_point,
 )
 
-SCREEN_SCALE = 4
+SCREEN_SCALE = 8
 
 
 class OutlineStrokeEnv(gym.Env):
@@ -30,10 +30,10 @@ class OutlineStrokeEnv(gym.Env):
         stroke_imgs: List[np.ndarray],
         render_mode: Optional[str] = None,
         stroke_width: int = 1,
-        dilation_size: int = 1,
+        dilation_size: int = 0,
     ) -> None:
         super().__init__()
-        self.observation_space = gym.spaces.Box(0.0, 1.0, [5, img_size, img_size])
+        self.observation_space = gym.spaces.Box(0.0, 1.0, [7, img_size, img_size])
         self.action_space = gym.spaces.Tuple(
             [
                 gym.spaces.Box(
@@ -62,6 +62,7 @@ class OutlineStrokeEnv(gym.Env):
         self.canvas_img = Image.new("1", (self.img_size, self.img_size))
         self.canvas_draw = ImageDraw.Draw(self.canvas_img)
         self.last_diff = 0
+        self.prev_frame = np.zeros([2, self.img_size, self.img_size])
         self.correct_moves: list[tuple[tuple[float, float], tuple[float, float]]] = []
         if self.render_mode == "human":
             pygame.init()
@@ -109,7 +110,9 @@ class OutlineStrokeEnv(gym.Env):
         pos_channel = self.gen_pos_channel(
             self.last_pos[0], self.last_pos[1], self.img_size
         )
-        obs = np.concatenate([np.stack([self.canvas, pos_channel]), self.ref], 0)
+        this_frame = np.stack([self.canvas, pos_channel])
+        obs = np.concatenate([self.prev_frame, this_frame, self.ref], 0)
+        self.prev_frame = this_frame
         
         return obs, reward, done, trunc, {}
 
@@ -117,7 +120,7 @@ class OutlineStrokeEnv(gym.Env):
         self.counter = 0
         index = random.randrange(0, len(self.ref_imgs))
         img = self.ref_imgs[index]
-        self.num_strokes = 20
+        self.num_strokes = 50
         self.last_pos = rand_point(
             MIN_DIST, MAX_DIST, prev=(self.img_size // 2, self.img_size // 2)
         )
@@ -133,7 +136,10 @@ class OutlineStrokeEnv(gym.Env):
         pos_channel = self.gen_pos_channel(
             self.last_pos[0], self.last_pos[1], self.img_size
         )
-        obs = np.concatenate([np.stack([self.canvas, pos_channel]), self.ref], 0)
+        self.prev_frame = np.zeros([2, self.img_size, self.img_size])
+        this_frame = np.stack([self.canvas, pos_channel])
+        obs = np.concatenate([self.prev_frame, this_frame, self.ref])
+        self.prev_frame = this_frame
         self.canvas_draw.rectangle((0, 0, self.img_size, self.img_size), 0)
         self.last_diff = (np.abs(self.canvas - self.ref_filter)).sum() / self.max_diff
         return obs, {}
@@ -154,7 +160,7 @@ class OutlineStrokeEnv(gym.Env):
                 self.screen,
             )
             pygame.display.flip()
-            self.clock.tick(20)
+            # self.clock.tick(60)
 
     def gen_pos_channel(self, x: int, y: int, img_size: int) -> np.ndarray:
         pos_layer_x = (
