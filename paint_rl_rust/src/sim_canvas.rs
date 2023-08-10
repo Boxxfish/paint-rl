@@ -41,7 +41,7 @@ impl SimCanvas {
         mid_y: i32,
         end_x: u32,
         end_y: u32,
-        brush_params: &[f32],
+        brush_params: &[f32]
     ) {
         let brush = &self.options.brushes[brush_index];
         let mut paint = Paint {
@@ -67,6 +67,12 @@ impl SimCanvas {
             .stroke_path(&path, &paint, &stroke, Transform::identity(), None);
         self.last_x = end_x;
         self.last_y = end_y;
+    }
+
+    /// Moves the cursor to a new position.
+    pub fn move_to(&mut self, x: u32, y: u32) {
+        self.last_x = x;
+        self.last_y = y;
     }
 
     /// Returns the last brush position.

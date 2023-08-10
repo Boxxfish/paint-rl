@@ -1,6 +1,9 @@
 # Created by https://www.toptal.com/developers/gitignore/api/python
 # Edit at https://www.toptal.com/developers/gitignore?templates=python
 
+.vscode/
+paint_rl_rust/build.sh
+
 temp/
 
 # WandB files

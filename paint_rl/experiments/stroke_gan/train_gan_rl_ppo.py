@@ -175,7 +175,7 @@ class Discriminator(nn.Module):
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.2),
         )
-        self.net2 = nn.Sequential(            
+        self.net2 = nn.Sequential(
             nn.Linear(128, 1),
             nn.Sigmoid(),
         )
@@ -206,13 +206,14 @@ def gen_output(
         obs_, _ = temp_env.reset()
         obs = torch.from_numpy(obs_).float()
         done = False
-        while not done:
+        trunc = False
+        while not (done or trunc):
             action_probs_cont, action_probs_disc = p_net(obs.unsqueeze(0))
             cont_distr = Normal(loc=action_probs_cont.squeeze(), scale=action_scale)
             disc_distr = Categorical(logits=action_probs_disc.squeeze())
             action_cont = cont_distr.sample().numpy()
             action_disc = disc_distr.sample().numpy()
-            obs_, _, done, _, _ = temp_env.step((action_cont, action_disc))
+            obs_, _, done, trunc, _ = temp_env.step((action_cont, action_disc))
             obs = torch.from_numpy(obs_).float()
     return np.array(temp_env.canvas)
 
@@ -247,7 +248,12 @@ env = gym.vector.SyncVectorEnv(
     [
         lambda: NormalizeReward(
             RefStrokeEnv(
-                canvas_size, img_size, ref_imgs, d_net, stroke_width=stroke_width, max_strokes=50
+                canvas_size,
+                img_size,
+                ref_imgs,
+                d_net,
+                stroke_width=stroke_width,
+                max_strokes=50,
             )
         )
         for _ in range(num_envs)
@@ -321,7 +327,7 @@ if args.test:
         None,
         stroke_width=stroke_width,
         render_mode="human",
-        max_strokes=100
+        max_strokes=100,
     )
     p_net = PolicyNet(IMG_SIZE)
     p_net.load_state_dict(torch.load("temp/p_net.pt"))
@@ -423,7 +429,7 @@ for step in tqdm(range(iterations), position=0):
         [ref_imgs[i] for i in ds_indices]
     )  # Shape: (disc_ds_size, 3, img_size, img_size)
     ground_truth = np.expand_dims(
-        np.stack([stroke_imgs[i] for i in ds_indices[: disc_ds_size // 2]])* masks, 1
+        np.stack([stroke_imgs[i] for i in ds_indices[: disc_ds_size // 2]]) * masks, 1
     )  # Shape: (disc_ds_size / 2, 1 img_size, img_size)
     generated = np.expand_dims(
         np.stack(
@@ -439,7 +445,8 @@ for step in tqdm(range(iterations), position=0):
                 )
                 for i in tqdm(ds_indices[disc_ds_size // 2 :])
             ]
-        ) * masks,
+        )
+        * masks,
         1,
     )  # Shape: (disc_ds_size / 2, 1 img_size, img_size)
     ds_x_real = (
@@ -449,11 +456,7 @@ for step in tqdm(range(iterations), position=0):
         .float()
         .to(device)
     )  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
-    ds_y_real = (
-        torch.from_numpy(np.ones([disc_ds_size // 2]))
-        .float()
-        .to(device)
-    )
+    ds_y_real = torch.from_numpy(np.ones([disc_ds_size // 2])).float().to(device)
     ds_x_generated = (
         torch.from_numpy(np.concatenate([ds_refs[disc_ds_size // 2 :], generated], 1))
         .float()

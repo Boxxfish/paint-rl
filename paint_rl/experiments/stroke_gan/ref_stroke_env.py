@@ -111,7 +111,7 @@ class RefStrokeEnv(gym.Env):
             self.canvas = new_stroke
 
         self.counter += 1
-        done = self.counter == self.num_strokes
+        trunc = self.counter == self.num_strokes
 
         self.last_pos = end_point
 
@@ -139,7 +139,8 @@ class RefStrokeEnv(gym.Env):
         self.last_score = score
 
         # If reward model is very certain, mark as done
-        if score >= 0.9 and self.counter >= 4:
+        done = False
+        if score >= 0.95 and self.counter >= 4:
             print("Threshold hit! Score:", score)
             done = True
         # print(score)
@@ -154,7 +155,7 @@ class RefStrokeEnv(gym.Env):
         obs = np.concatenate([self.prev_frame, this_frame, self.ref])
         self.prev_frame = this_frame
 
-        return obs, reward, done, False, {}
+        return obs, reward, done, trunc, {}
 
     def reset(self, **kwargs) -> tuple[np.ndarray, dict[str, Any]]:
         self.counter = 0
