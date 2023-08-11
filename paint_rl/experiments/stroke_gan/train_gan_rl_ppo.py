@@ -17,6 +17,7 @@ from typing import Any, Tuple
 import gymnasium as gym
 from matplotlib import pyplot as plt  # type: ignore
 import numpy as np
+from paint_rl_rust import TrainingContext
 import torch
 import torch.nn as nn
 import wandb
@@ -244,6 +245,7 @@ d_net.to(device)
 d_net.eval()
 d_opt = torch.optim.Adam(d_net.parameters(), lr=d_lr)
 
+max_strokes = 50
 env = gym.vector.SyncVectorEnv(
     [
         lambda: NormalizeReward(
@@ -253,7 +255,7 @@ env = gym.vector.SyncVectorEnv(
                 ref_imgs,
                 d_net,
                 stroke_width=stroke_width,
-                max_strokes=50,
+                max_strokes=max_strokes,
             )
         )
         for _ in range(num_envs)
@@ -266,7 +268,7 @@ test_env = RefStrokeEnv(
     d_net,
     stroke_width=stroke_width,
     render_mode="human",
-    max_strokes=50,
+    max_strokes=max_strokes,
 )
 
 # If evaluating, run the sim
@@ -378,7 +380,6 @@ wandb.init(
     },
 )
 
-
 # Initialize policy and value networks
 obs_space = env.single_observation_space
 assert obs_space.shape is not None
@@ -394,6 +395,28 @@ p_net = PolicyNet(img_size)
 p_net.load_state_dict(torch.load("temp/stroke_net.pt"))  # For loading from pretraining
 v_opt = torch.optim.Adam(v_net.parameters(), lr=v_lr)
 p_opt = torch.optim.Adam(p_net.parameters(), lr=p_lr)
+
+# Initialize training context
+p_net_path = "temp/training/p_net.ptc"
+d_net_path = "temp/training/d_net.ptc"
+sample_input = obs_space.sample()
+traced = torch.jit.trace(
+    p_net,
+    (
+        torch.from_numpy(sample_input).unsqueeze(0),
+    ),
+)
+traced.save(p_net_path)
+
+sample_input = torch.zeros([1, 4, img_size, img_size]).to(device)
+traced = torch.jit.trace(
+    d_net,
+    (
+        sample_input,
+    ),
+)
+traced.save(d_net_path)
+training_context = TrainingContext(img_size, canvas_size, "temp/all_outputs", p_net_path, d_net_path, max_strokes)
 
 # If resuming, load state dicts
 if args.resume:
@@ -421,33 +444,34 @@ buffer_disc = ActionRolloutBuffer(
 obs = torch.Tensor(env.reset()[0])
 done = False
 orig_action_scale = action_scale
-masks = np.random.uniform(0.0, 1.0, [disc_ds_size // 2, img_size, img_size]) < 0.9
 for step in tqdm(range(iterations), position=0):
+    # Export models
+    sample_input = obs_space.sample()
+    traced = torch.jit.trace(
+        p_net,
+        (
+            torch.from_numpy(sample_input).unsqueeze(0),
+        ),
+    )
+    traced.save(p_net_path)
+
+    sample_input = torch.zeros([1, 4, img_size, img_size]).to(device)
+    traced = torch.jit.trace(
+        d_net,
+        (
+            sample_input,
+        ),
+    )
+    traced.save(d_net_path)
+    generated = training_context.gen_imgs(disc_ds_size // 2, action_scale) # Shape: (disc_ds_size / 2, 4 img_size, img_size)
+
     # Training the discriminator
     ds_indices = np.random.permutation(len(ref_imgs))[:disc_ds_size].tolist()
     ds_refs = np.stack(
         [ref_imgs[i] for i in ds_indices]
     )  # Shape: (disc_ds_size, 3, img_size, img_size)
     ground_truth = np.expand_dims(
-        np.stack([stroke_imgs[i] for i in ds_indices[: disc_ds_size // 2]]) * masks, 1
-    )  # Shape: (disc_ds_size / 2, 1 img_size, img_size)
-    generated = np.expand_dims(
-        np.stack(
-            [
-                gen_output(
-                    p_net,
-                    ref_imgs[i],
-                    canvas_size,
-                    stroke_width,
-                    img_size,
-                    action_scale,
-                    d_net,
-                )
-                for i in tqdm(ds_indices[disc_ds_size // 2 :])
-            ]
-        )
-        * masks,
-        1,
+        np.stack([stroke_imgs[i] for i in ds_indices[: disc_ds_size // 2]]), 1
     )  # Shape: (disc_ds_size / 2, 1 img_size, img_size)
     ds_x_real = (
         torch.from_numpy(
@@ -458,7 +482,7 @@ for step in tqdm(range(iterations), position=0):
     )  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
     ds_y_real = torch.from_numpy(np.ones([disc_ds_size // 2])).float().to(device)
     ds_x_generated = (
-        torch.from_numpy(np.concatenate([ds_refs[disc_ds_size // 2 :], generated], 1))
+        torch.from_numpy(generated)
         .float()
         .to(device)
     )  # Shape: (disc_ds_size / 2, 4, img_size, img_size)

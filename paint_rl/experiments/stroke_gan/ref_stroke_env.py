@@ -82,7 +82,6 @@ class RefStrokeEnv(gym.Env):
         self.canvas_img = Image.new("1", (self.canvas_size, self.canvas_size))
         self.canvas_draw = ImageDraw.Draw(self.canvas_img)
         self.prev_frame = np.zeros([2, self.img_size, self.img_size])
-        self.mask = np.random.uniform(0.0, 1.0, [img_size, img_size]) < 0.9
         if self.render_mode == "human":
             pygame.init()
             self.screen = pygame.display.set_mode(
@@ -127,7 +126,7 @@ class RefStrokeEnv(gym.Env):
             reward_inpt = (
                 torch.from_numpy(
                     np.concatenate(
-                        [self.ref, (np.array(self.canvas) * self.mask)[np.newaxis, ...]], 0
+                        [self.ref, (np.array(self.canvas))[np.newaxis, ...]], 0
                     )
                 )
                 .unsqueeze(0)
