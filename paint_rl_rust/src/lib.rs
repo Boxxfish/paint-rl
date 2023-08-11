@@ -31,12 +31,17 @@ impl TrainingContext {
         p_net_path: &str,
         reward_model_path: &str,
         max_strokes: u32,
+        max_refs: Option<u64>,
     ) -> Self {
         // Load all images
         let mut ref_imgs = Vec::new();
         let path = std::path::Path::new(ref_img_path);
-        let count = path.read_dir().unwrap().count() as u64;
-        for dir in path.read_dir().unwrap().progress_count(count) {
+        let count = if let Some(max_refs) = max_refs {
+            max_refs
+        } else {
+            path.read_dir().unwrap().count() as u64
+        };
+        for dir in path.read_dir().unwrap().take(count as usize).progress_count(count) {
             let dir = dir.unwrap();
             let mut path = dir.path().to_path_buf();
             path.push("final.png");
@@ -55,7 +60,14 @@ impl TrainingContext {
 
         // Set up environment
         let reward_model = Arc::new(RwLock::new(tch::CModule::load(reward_model_path).unwrap()));
-        let env_ = SimCanvasEnv::new(canvas_size, img_size, 4, &ref_imgs, max_strokes, &reward_model);
+        let env_ = SimCanvasEnv::new(
+            canvas_size,
+            img_size,
+            4,
+            &ref_imgs,
+            max_strokes,
+            &reward_model,
+        );
 
         Self {
             ref_imgs,
@@ -66,7 +78,12 @@ impl TrainingContext {
     }
 
     /// Generates a set of images.
-    pub fn gen_imgs(&mut self, py: Python<'_>, num_imgs: usize, action_scale: f32) -> Py<PyArray<f32, Dim<[usize; 4]>>> {
+    pub fn gen_imgs(
+        &mut self,
+        py: Python<'_>,
+        num_imgs: usize,
+        action_scale: f32,
+    ) -> Py<PyArray<f32, Dim<[usize; 4]>>> {
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let _guard = tch::no_grad_guard();
         let mut rng = rand::thread_rng();
@@ -109,7 +126,9 @@ impl TrainingContext {
             ndarray::Axis(0),
             &img_arr.iter().map(|x| x.view()).collect::<Vec<_>>(),
         )
-        .unwrap().into_pyarray(py).to_owned()
+        .unwrap()
+        .into_pyarray(py)
+        .to_owned()
     }
 }
 

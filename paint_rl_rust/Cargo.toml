@@ -6,7 +6,14 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 name = "paint_rl_rust"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bench]]
+name = "gen_images"
+harness = false
+
+[dev-dependencies]
+criterion = "0.4"
 
 [dependencies]
 pyo3 = "0.19.0"
