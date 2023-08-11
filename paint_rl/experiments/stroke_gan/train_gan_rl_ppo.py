@@ -408,13 +408,14 @@ traced = torch.jit.trace(
 )
 traced.save(p_net_path)
 
-sample_input = torch.zeros([1, 4, img_size, img_size]).to(device)
+sample_input = torch.zeros([1, 4, img_size, img_size])
 traced = torch.jit.trace(
-    d_net,
+    d_net.cpu(),
     (
         sample_input,
     ),
 )
+d_net.to(device)
 traced.save(d_net_path)
 training_context = TrainingContext(img_size, canvas_size, "temp/all_outputs", p_net_path, d_net_path, max_strokes)
 
@@ -462,6 +463,7 @@ for step in tqdm(range(iterations), position=0):
             sample_input,
         ),
     )
+    d_net.to(device)
     traced.save(d_net_path)
     generated = training_context.gen_imgs(disc_ds_size // 2, action_scale) # Shape: (disc_ds_size / 2, 4 img_size, img_size)
 

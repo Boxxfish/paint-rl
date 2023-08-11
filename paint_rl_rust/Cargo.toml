@@ -12,6 +12,9 @@ crate-type = ["cdylib", "rlib"]
 name = "gen_images"
 harness = false
 
+[profile.bench]
+debug = true
+
 [dev-dependencies]
 criterion = "0.4"
 

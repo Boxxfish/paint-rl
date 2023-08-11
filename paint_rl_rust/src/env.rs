@@ -92,11 +92,11 @@ impl SimCanvasEnv {
         }
         self.last_pen_down = pen_down;
 
+        // Compute score
         let reward_inpt =
             Tensor::concatenate(&[&self.ref_img, &(self.scaled_canvas()).unsqueeze(0)], 0)
                 .unsqueeze(0)
-                .to_kind(tch::Kind::Float)
-                .to_device(tch::Device::Cuda(0));
+                .to_kind(tch::Kind::Float);
         let score = self
             .reward_model
             .read()
@@ -192,6 +192,8 @@ impl SimCanvasEnv {
         let obs = Tensor::concatenate(&[&self.prev_frame, &this_frame, &self.ref_img], 0);
         self.prev_frame = this_frame;
         self.sim_canvas.clear();
+        
+        // Compute score
         let reward_inpt = Tensor::concatenate(
             &[
                 &self.ref_img,
@@ -203,8 +205,7 @@ impl SimCanvasEnv {
             0,
         )
         .unsqueeze(0)
-        .to_kind(tch::Kind::Float)
-        .to_device(tch::Device::Cuda(0));
+        .to_kind(tch::Kind::Float);
         self.last_score = self
             .reward_model
             .read()
@@ -212,6 +213,7 @@ impl SimCanvasEnv {
             .forward_ts(&[reward_inpt])
             .unwrap()
             .double_value(&[]) as f32;
+
         obs
     }
 

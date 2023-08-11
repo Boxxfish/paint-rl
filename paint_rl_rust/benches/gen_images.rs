@@ -14,7 +14,8 @@ fn gen_imgs(num_imgs: usize, training_ctx: &mut TrainingContext) {
 fn benchmark(c: &mut Criterion) {
     c.bench_function("gen_imgs 16", move |b| {
         b.iter_batched(
-            || {
+            || 
+            {
                 TrainingContext::new(
                     64,
                     256,
@@ -24,8 +25,11 @@ fn benchmark(c: &mut Criterion) {
                     50,
                     Some(100),
                 )
-            },
-            |mut training_ctx| gen_imgs(black_box(16), &mut training_ctx),
+            }
+            ,
+            |mut training_ctx| 
+            gen_imgs(black_box(16), &mut training_ctx)
+            ,
             BatchSize::LargeInput,
         )
     });
