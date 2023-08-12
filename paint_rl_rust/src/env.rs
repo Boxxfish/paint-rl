@@ -10,15 +10,17 @@ use crate::sim_canvas::{BrushOptions, BrushParam, SimCanvas, SimCanvasOptions};
 pub struct SimCanvasEnv {
     sim_canvas: SimCanvas,
     scaled_size: u32,
-    counter: u32,
+    pub counter: u32,
     ref_imgs: Arc<RwLock<Vec<ndarray::Array3<f32>>>>,
     ref_img: Tensor,
     pub ref_img_index: usize,
     max_strokes: u32,
     last_pen_down: bool,
     prev_frame: Tensor,
-    last_score: f32,
-    reward_model: Arc<RwLock<tch::CModule>>,
+    pub last_score: f32,
+    pub reward_model: Arc<RwLock<tch::CModule>>,
+    scaled_canvas_real: Tensor,
+    dirty: bool,
 }
 
 impl SimCanvasEnv {
@@ -55,6 +57,8 @@ impl SimCanvasEnv {
             last_score: 0.0,
             reward_model: reward_model.clone(),
             ref_img_index: 0,
+            scaled_canvas_real: Tensor::zeros([], (tch::Kind::Float, tch::Device::Cpu)),
+            dirty: true,
         }
     }
 
@@ -83,6 +87,7 @@ impl SimCanvasEnv {
         } else {
             self.sim_canvas.move_to(end_point.0, end_point.1);
         }
+        self.dirty = true;
         self.counter += 1;
         let trunc = self.counter == self.max_strokes;
 
@@ -94,39 +99,17 @@ impl SimCanvasEnv {
         }
         self.last_pen_down = pen_down;
 
-        // Compute score
-        let scaled_canvas = self.scaled_canvas();
-        let reward_inpt =
-            Tensor::concatenate(&[&self.ref_img, &scaled_canvas.unsqueeze(0)], 0)
-                .unsqueeze(0)
-                .to_kind(tch::Kind::Float);
-        let score = self
-            .reward_model
-            .read()
-            .unwrap()
-            .forward_ts(&[reward_inpt])
-            .unwrap()
-            .double_value(&[]) as f32;
-        reward += score - self.last_score;
-        self.last_score = score;
-
-        // If reward model is very certain, mark as done
-        let mut done = false;
-        if score >= 0.95 && self.counter >= 4 {
-            done = true;
-        }
-
         let scale_ratio = self.scaled_size as f32 / self.sim_canvas.options.canvas_size as f32;
         let pos_channel = self.gen_pos_channel(
             (self.sim_canvas.last_x as f32 * scale_ratio) as u32,
             (self.sim_canvas.last_y as f32 * scale_ratio) as u32,
             self.scaled_size,
         );
-        let this_frame = Tensor::stack(&[scaled_canvas, pos_channel], 0);
+        let this_frame = Tensor::stack(&[self.scaled_canvas(), pos_channel], 0);
         let obs = Tensor::concatenate(&[&self.prev_frame, &this_frame, &self.ref_img], 0);
         self.prev_frame = this_frame;
 
-        (obs, reward, done, trunc)
+        (obs, reward, false, trunc)
     }
 
     /// Generates the positional channel.
@@ -147,22 +130,26 @@ impl SimCanvasEnv {
     }
 
     /// Returns a scaled version of the canvas.
-    pub fn scaled_canvas(&self) -> Tensor {
-        let canvas_size = self.sim_canvas.options.canvas_size;
-        let canvas_img =
-            RgbaImage::from_raw(canvas_size, canvas_size, self.sim_canvas.pixels()).unwrap();
-        let canvas_img = image::imageops::resize(
-            &canvas_img,
-            self.scaled_size,
-            self.scaled_size,
-            FilterType::Gaussian,
-        );
-        Tensor::from_slice(canvas_img.into_vec().as_slice())
-            .reshape([self.scaled_size as i64, self.scaled_size as i64, 4])
-            .permute([2, 0, 1])
-            .get(0)
-            .to_kind(tch::Kind::Float)
-            / 255.0
+    pub fn scaled_canvas(&mut self) -> Tensor {
+        if self.dirty {
+            let canvas_size = self.sim_canvas.options.canvas_size;
+            let canvas_img =
+                RgbaImage::from_raw(canvas_size, canvas_size, self.sim_canvas.pixels()).unwrap();
+            let canvas_img = image::imageops::resize(
+                &canvas_img,
+                self.scaled_size,
+                self.scaled_size,
+                FilterType::Gaussian,
+            );
+            self.scaled_canvas_real = Tensor::from_slice(canvas_img.into_vec().as_slice())
+                .reshape([self.scaled_size as i64, self.scaled_size as i64, 4])
+                .permute([2, 0, 1])
+                .get(0)
+                .to_kind(tch::Kind::Float)
+                / 255.0;
+            self.dirty = false;
+        }
+        self.scaled_canvas_real.copy()
     }
 
     /// Resets the environment.
@@ -192,25 +179,21 @@ impl SimCanvasEnv {
             [2, self.scaled_size as i64, self.scaled_size as i64],
             options,
         );
-        let this_frame = Tensor::stack(&[self.scaled_canvas(), pos_channel], 0);
+        let this_frame = Tensor::stack(
+            &[
+                Tensor::zeros([self.scaled_size as i64, self.scaled_size as i64], options),
+                pos_channel,
+            ],
+            0,
+        );
         let obs = Tensor::concatenate(&[&self.prev_frame, &this_frame, &self.ref_img], 0);
         self.prev_frame = this_frame;
         self.sim_canvas.clear();
-        
+        self.dirty = true;
+
         // Compute score
-        let reward_inpt = Tensor::concatenate(
-            &[
-                &self.ref_img,
-                &Tensor::zeros(
-                    [1, self.scaled_size as i64, self.scaled_size as i64],
-                    options,
-                ),
-            ],
-            0,
-        )
-        .unsqueeze(0)
-        .to_kind(tch::Kind::Float);
-    
+        let reward_inpt = self.reward_input(None);
+
         self.last_score = self
             .reward_model
             .read()
@@ -220,6 +203,23 @@ impl SimCanvasEnv {
             .double_value(&[]) as f32;
 
         obs
+    }
+
+    /// Returns the input to the reward model.
+    /// If input is None, a tensor of zeroes is used as the canvas.
+    pub fn reward_input(&self, input: Option<&Tensor>) -> Tensor {
+        let options = (tch::Kind::Float, tch::Device::Cpu);
+        let input = if let Some(input) = input {
+            input.unsqueeze(0)
+        } else {
+            Tensor::zeros(
+                [1, self.scaled_size as i64, self.scaled_size as i64],
+                options,
+            )
+        };
+        Tensor::concatenate(&[&self.ref_img, &input], 0)
+            .unsqueeze(0)
+            .to_kind(tch::Kind::Float)
     }
 
     /// Sets the current reward model.

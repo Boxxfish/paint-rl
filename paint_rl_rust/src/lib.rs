@@ -212,6 +212,40 @@ impl VecEnv {
                 obs_vec.push(obs);
             }
         }
+
+        // Compute last scores
+        let mut reward_inpts = Vec::new();
+        for i in 0..self.num_envs {
+            let scaled_canvas = self.envs[i].scaled_canvas();
+            let reward_inpt = self.envs[i].reward_input(Some(&scaled_canvas));
+            reward_inpts.push(reward_inpt);
+        }
+        let reward_inpts = Tensor::concatenate(&reward_inpts, 0);
+
+        let mut scores_buf: Vec<f32> = vec![0.0; self.num_envs];
+        let scores = self.envs[0]
+            .reward_model
+            .read()
+            .unwrap()
+            .forward_ts(&[reward_inpts])
+            .unwrap();
+        scores.copy_data(&mut scores_buf, self.num_envs);
+
+        for (i, (done, trunc)) in dones.iter_mut().zip(&truncs).enumerate() {
+            if !(*done || *trunc) {
+                let score = scores_buf[i];
+                rewards[i] += score - self.envs[i].last_score;
+                self.envs[i].last_score = score;
+
+                // If reward model is very certain, mark as done
+                if score >= 0.95 && self.envs[i].counter >= 4 {
+                    *done = true;
+                    let obs = self.envs[i].reset();
+                    obs_vec[i] = obs;
+                }
+            }
+        }
+
         (obs_vec, rewards, dones, truncs)
     }
 

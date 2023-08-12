@@ -416,7 +416,7 @@ traced = torch.jit.trace(
     ),
 )
 traced.save(d_net_path)
-training_context = TrainingContext(img_size, canvas_size, "temp/all_outputs", p_net_path, d_net_path, 32, max_strokes)
+training_context = TrainingContext(img_size, canvas_size, "temp/all_outputs", p_net_path, d_net_path, 64, max_strokes)
 d_net.to(device)
 
 # If resuming, load state dicts
