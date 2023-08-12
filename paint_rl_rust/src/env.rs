@@ -191,17 +191,6 @@ impl SimCanvasEnv {
         self.sim_canvas.clear();
         self.dirty = true;
 
-        // Compute score
-        let reward_inpt = self.reward_input(None);
-
-        self.last_score = self
-            .reward_model
-            .read()
-            .unwrap()
-            .forward_ts(&[reward_inpt])
-            .unwrap()
-            .double_value(&[]) as f32;
-
         obs
     }
 

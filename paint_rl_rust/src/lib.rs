@@ -214,7 +214,7 @@ impl VecEnv {
         }
 
         // Compute last scores
-        let mut reward_inpts = Vec::new();
+        let mut reward_inpts = Vec::with_capacity(self.num_envs);
         for i in 0..self.num_envs {
             let scaled_canvas = self.envs[i].scaled_canvas();
             let reward_inpt = self.envs[i].reward_input(Some(&scaled_canvas));
@@ -243,6 +243,29 @@ impl VecEnv {
                     let obs = self.envs[i].reset();
                     obs_vec[i] = obs;
                 }
+            }
+        }
+
+        // Compute last scores of reset environments
+        let mut reward_inpts = Vec::with_capacity(self.num_envs);
+        for i in 0..self.num_envs {
+            let reward_inpt = self.envs[i].reward_input(None);
+            reward_inpts.push(reward_inpt);
+        }
+        let reward_inpts = Tensor::concatenate(&reward_inpts, 0);
+
+        let mut scores_buf: Vec<f32> = vec![0.0; self.num_envs];
+        let scores = self.envs[0]
+            .reward_model
+            .read()
+            .unwrap()
+            .forward_ts(&[reward_inpts])
+            .unwrap();
+        scores.copy_data(&mut scores_buf, self.num_envs);
+
+        for (i, (&done, &trunc)) in dones.iter().zip(&truncs).enumerate() {
+            if done || trunc {
+                self.envs[i].last_score = scores_buf[i];
             }
         }
 
