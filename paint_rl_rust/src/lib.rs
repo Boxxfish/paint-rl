@@ -68,17 +68,9 @@ impl TrainingContext {
         let reward_model = Arc::new(RwLock::new(tch::CModule::load(reward_model_path).unwrap()));
         let env_ = VecEnv::new(
             (0..num_envs)
-                .map(|_| {
-                    SimCanvasEnv::new(
-                        canvas_size,
-                        img_size,
-                        4,
-                        &ref_imgs,
-                        max_strokes,
-                        &reward_model,
-                    )
-                })
+                .map(|_| SimCanvasEnv::new(canvas_size, img_size, 4, &ref_imgs, max_strokes))
                 .collect(),
+            &reward_model,
         );
 
         Self {
@@ -103,11 +95,10 @@ impl TrainingContext {
         let mut ref_indices: Vec<_> = (0..ref_imgs.len()).collect();
         ref_indices.shuffle(&mut rng);
         let mut img_arr: Vec<ndarray::Array3<f32>> = Vec::with_capacity(num_imgs);
-        for i in 0..self.env.num_envs {
-            self.env.envs[i].set_reward_model(&Arc::new(RwLock::new(
-                tch::CModule::load(&self.reward_model_path).unwrap(),
-            )));
-        }
+        let reward_model = Arc::new(RwLock::new(
+            tch::CModule::load(&self.reward_model_path).unwrap(),
+        ));
+        self.env.reward_model = reward_model;
         let p_net = tch::CModule::load(&self.p_net_path).unwrap();
         let mut obs = Tensor::stack(&self.env.reset(), 0);
         let bar = ProgressBar::new(num_imgs as u64);
@@ -178,15 +169,17 @@ fn sample(logits: &Tensor) -> Vec<u32> {
 pub struct VecEnv {
     pub envs: Vec<SimCanvasEnv>,
     pub num_envs: usize,
+    pub reward_model: Arc<RwLock<tch::CModule>>,
 }
 
 type VecEnvOutput = (Vec<Tensor>, Vec<f32>, Vec<bool>, Vec<bool>);
 
 impl VecEnv {
-    pub fn new(envs: Vec<SimCanvasEnv>) -> Self {
+    pub fn new(envs: Vec<SimCanvasEnv>, reward_model: &Arc<RwLock<tch::CModule>>) -> Self {
         Self {
             num_envs: envs.len(),
             envs,
+            reward_model: reward_model.clone(),
         }
     }
 
@@ -223,7 +216,7 @@ impl VecEnv {
         let reward_inpts = Tensor::concatenate(&reward_inpts, 0);
 
         let mut scores_buf: Vec<f32> = vec![0.0; self.num_envs];
-        let scores = self.envs[0]
+        let scores = self
             .reward_model
             .read()
             .unwrap()
@@ -255,7 +248,7 @@ impl VecEnv {
         let reward_inpts = Tensor::concatenate(&reward_inpts, 0);
 
         let mut scores_buf: Vec<f32> = vec![0.0; self.num_envs];
-        let scores = self.envs[0]
+        let scores = self
             .reward_model
             .read()
             .unwrap()

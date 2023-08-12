@@ -18,7 +18,6 @@ pub struct SimCanvasEnv {
     last_pen_down: bool,
     prev_frame: Tensor,
     pub last_score: f32,
-    pub reward_model: Arc<RwLock<tch::CModule>>,
     scaled_canvas_real: Tensor,
     dirty: bool,
 }
@@ -31,7 +30,6 @@ impl SimCanvasEnv {
         brush_diameter: u32,
         ref_imgs: &Arc<RwLock<Vec<ndarray::Array3<f32>>>>,
         max_strokes: u32,
-        reward_model: &Arc<RwLock<tch::CModule>>,
     ) -> Self {
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let canvas_options = SimCanvasOptions {
@@ -55,7 +53,6 @@ impl SimCanvasEnv {
             last_pen_down: false,
             prev_frame: Tensor::zeros([2, scaled_size as i64, scaled_size as i64], options),
             last_score: 0.0,
-            reward_model: reward_model.clone(),
             ref_img_index: 0,
             scaled_canvas_real: Tensor::zeros([], (tch::Kind::Float, tch::Device::Cpu)),
             dirty: true,
@@ -209,10 +206,5 @@ impl SimCanvasEnv {
         Tensor::concatenate(&[&self.ref_img, &input], 0)
             .unsqueeze(0)
             .to_kind(tch::Kind::Float)
-    }
-
-    /// Sets the current reward model.
-    pub fn set_reward_model(&mut self, reward_model: &Arc<RwLock<tch::CModule>>) {
-        self.reward_model = reward_model.clone();
     }
 }
