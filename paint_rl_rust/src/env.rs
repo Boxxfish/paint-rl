@@ -95,8 +95,9 @@ impl SimCanvasEnv {
         self.last_pen_down = pen_down;
 
         // Compute score
+        let scaled_canvas = self.scaled_canvas();
         let reward_inpt =
-            Tensor::concatenate(&[&self.ref_img, &(self.scaled_canvas()).unsqueeze(0)], 0)
+            Tensor::concatenate(&[&self.ref_img, &scaled_canvas.unsqueeze(0)], 0)
                 .unsqueeze(0)
                 .to_kind(tch::Kind::Float);
         let score = self
@@ -121,7 +122,7 @@ impl SimCanvasEnv {
             (self.sim_canvas.last_y as f32 * scale_ratio) as u32,
             self.scaled_size,
         );
-        let this_frame = Tensor::stack(&[self.scaled_canvas(), pos_channel], 0);
+        let this_frame = Tensor::stack(&[scaled_canvas, pos_channel], 0);
         let obs = Tensor::concatenate(&[&self.prev_frame, &this_frame, &self.ref_img], 0);
         self.prev_frame = this_frame;
 

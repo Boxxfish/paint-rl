@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use env::SimCanvasEnv;
 use image::imageops::FilterType;
-use indicatif::{ProgressIterator, ProgressBar};
+use indicatif::{ProgressBar, ProgressIterator};
 use ndarray::Dim;
 use numpy::{IntoPyArray, PyArray};
 use pyo3::prelude::*;
@@ -120,18 +120,21 @@ impl TrainingContext {
             let tch::IValue::Tensor(action_probs_cont) = &results[0] else {panic!("Invalid output.")};
             let tch::IValue::Tensor(action_probs_disc) = &results[1] else {panic!("Invalid output.")};
             let action_cont = action_probs_cont
-                + Tensor::zeros([self.env.num_envs as i64, 4], options).normal_(0.0, 1.0) * action_scale as f64;
+                + Tensor::zeros([self.env.num_envs as i64, 4], options).normal_(0.0, 1.0)
+                    * action_scale as f64;
             let action_disc = sample(action_probs_disc);
-            
+
             let (obs_, _, done, trunc) = self.env.step(&action_cont, &action_disc);
 
             // If any images have finished, add them to our array
             for (i, (&done, trunc)) in done.iter().zip(trunc).enumerate() {
                 if done || trunc {
-                    let data_item: ndarray::ArrayD<f32> = obs.get(i as i64).index_select(0, &obs_select)
-                    .as_ref()
-                    .try_into()
-                    .unwrap();
+                    let data_item: ndarray::ArrayD<f32> = obs
+                        .get(i as i64)
+                        .index_select(0, &obs_select)
+                        .as_ref()
+                        .try_into()
+                        .unwrap();
                     img_arr.push(data_item.into_dimensionality().unwrap());
                     bar.inc(1);
                 }
