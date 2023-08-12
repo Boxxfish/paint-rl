@@ -51,7 +51,7 @@ eval_steps = 4  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
 p_lr = 0.00001  # Learning rate of the policy net.
 d_lr = 0.001  # Learning rate of the discriminator.
-action_scale = 0.04  # Scale for actions.
+action_scale = 0.02  # Scale for actions.
 gen_steps = 4  # Number of generator steps per iteration.
 disc_steps = 2  # Number of discriminator steps per iteration.
 disc_ds_size = 2048  # Size of the discriminator dataset. Half will be generated.
@@ -528,9 +528,13 @@ for step in tqdm(range(iterations), position=0):
         #         print("Prediction: ", pred)
         #         plt.imshow(ds_x_real[i][3].cpu())
         #         plt.show()
+        #         plt.imshow(ds_x_real[i][:3].mean(0).cpu())
+        #         plt.show()
         #         pred = d_net(ds_x_generated[i].unsqueeze(0)).squeeze(0).item()
         #         print("Prediction: ", pred)
         #         plt.imshow(ds_x_generated[i][3].cpu())
+        #         plt.show()
+        #         plt.imshow(ds_x_generated[i][:3].mean(0).cpu())
         #         plt.show()
     avg_disc_loss_real /= disc_steps * num_batches
     avg_disc_loss_generated /= disc_steps * num_batches

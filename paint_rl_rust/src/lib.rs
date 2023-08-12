@@ -110,30 +110,25 @@ impl TrainingContext {
         }
         let p_net = tch::CModule::load(&self.p_net_path).unwrap();
         let mut obs = Tensor::stack(&self.env.reset(), 0);
-        let mut last_ref_indices: Vec<_> = (0..self.env.num_envs).collect();
         let bar = ProgressBar::new(num_imgs as u64);
+        let obs_select = Tensor::from_slice(&[4, 5, 6, 2]);
         while img_arr.len() < num_imgs {
             // Generate image
             let tch::IValue::Tuple(results) = p_net
-                    .forward_is(&[tch::IValue::Tensor(obs)])
+                    .forward_is(&[tch::IValue::Tensor(obs.copy())])
                     .unwrap() else {panic!("Invalid output.")};
             let tch::IValue::Tensor(action_probs_cont) = &results[0] else {panic!("Invalid output.")};
             let tch::IValue::Tensor(action_probs_disc) = &results[1] else {panic!("Invalid output.")};
             let action_cont = action_probs_cont
                 + Tensor::zeros([self.env.num_envs as i64, 4], options).normal_(0.0, 1.0) * action_scale as f64;
             let action_disc = sample(action_probs_disc);
+            
             let (obs_, _, done, trunc) = self.env.step(&action_cont, &action_disc);
-            obs = Tensor::stack(&obs_, 0);
 
             // If any images have finished, add them to our array
             for (i, (&done, trunc)) in done.iter().zip(trunc).enumerate() {
                 if done || trunc {
-                    let ref_img = &ref_imgs[last_ref_indices[i]];
-                    let ref_img = Tensor::try_from(ref_img).unwrap();
-                    let data_item: ndarray::ArrayD<f32> = Tensor::concatenate(
-                        &[self.env.envs[i].scaled_canvas().unsqueeze(0), ref_img],
-                        0,
-                    )
+                    let data_item: ndarray::ArrayD<f32> = obs.get(i as i64).index_select(0, &obs_select)
                     .as_ref()
                     .try_into()
                     .unwrap();
@@ -141,11 +136,7 @@ impl TrainingContext {
                     bar.inc(1);
                 }
             }
-
-            // Update last ref indices
-            for i in 0..self.env.num_envs {
-                last_ref_indices[i] = self.env.envs[i].ref_img_index;
-            }
+            obs = Tensor::stack(&obs_, 0);
         }
         bar.finish();
 
