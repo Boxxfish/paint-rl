@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use env::SimCanvasEnv;
 use image::imageops::FilterType;
-use indicatif::ProgressIterator;
+use indicatif::{ProgressIterator, ProgressBar};
 use ndarray::Dim;
 use numpy::{IntoPyArray, PyArray};
 use pyo3::prelude::*;
@@ -15,7 +15,7 @@ pub mod sim_canvas;
 
 #[pyclass]
 pub struct TrainingContext {
-    env: SimCanvasEnv,
+    env: VecEnv,
     ref_imgs: Arc<RwLock<Vec<ndarray::Array3<f32>>>>,
     reward_model_path: String,
     p_net_path: String,
@@ -31,6 +31,7 @@ impl TrainingContext {
         p_net_path: &str,
         reward_model_path: &str,
         max_strokes: u32,
+        num_envs: u32,
         max_refs: Option<u64>,
     ) -> Self {
         // Load all images
@@ -41,7 +42,12 @@ impl TrainingContext {
         } else {
             path.read_dir().unwrap().count() as u64
         };
-        for dir in path.read_dir().unwrap().take(count as usize).progress_count(count) {
+        for dir in path
+            .read_dir()
+            .unwrap()
+            .take(count as usize)
+            .progress_count(count)
+        {
             let dir = dir.unwrap();
             let mut path = dir.path().to_path_buf();
             path.push("final.png");
@@ -60,13 +66,19 @@ impl TrainingContext {
 
         // Set up environment
         let reward_model = Arc::new(RwLock::new(tch::CModule::load(reward_model_path).unwrap()));
-        let env_ = SimCanvasEnv::new(
-            canvas_size,
-            img_size,
-            4,
-            &ref_imgs,
-            max_strokes,
-            &reward_model,
+        let env_ = VecEnv::new(
+            (0..num_envs)
+                .map(|_| {
+                    SimCanvasEnv::new(
+                        canvas_size,
+                        img_size,
+                        4,
+                        &ref_imgs,
+                        max_strokes,
+                        &reward_model,
+                    )
+                })
+                .collect(),
         );
 
         Self {
@@ -91,37 +103,53 @@ impl TrainingContext {
         let mut ref_indices: Vec<_> = (0..ref_imgs.len()).collect();
         ref_indices.shuffle(&mut rng);
         let mut img_arr: Vec<ndarray::Array3<f32>> = Vec::with_capacity(num_imgs);
-        self.env.set_reward_model(&Arc::new(RwLock::new(
-            tch::CModule::load(&self.reward_model_path).unwrap(),
-        )));
+        for i in 0..self.env.num_envs {
+            self.env.envs[i].set_reward_model(&Arc::new(RwLock::new(
+                tch::CModule::load(&self.reward_model_path).unwrap(),
+            )));
+        }
         let p_net = tch::CModule::load(&self.p_net_path).unwrap();
-        for &i in ref_indices[..num_imgs].iter().progress() {
-            let ref_img = &ref_imgs[i];
-            let ref_img = Tensor::try_from(ref_img).unwrap();
+        let mut obs = Tensor::stack(&self.env.reset(), 0);
+        let mut last_ref_indices: Vec<_> = (0..self.env.num_envs).collect();
+        let bar = ProgressBar::new(num_imgs as u64);
+        while img_arr.len() < num_imgs {
             // Generate image
-            let mut obs = self.env.reset_with_index(i).unsqueeze(0);
-            let mut done = false;
-            let mut trunc = false;
-            while !(done || trunc) {
-                let tch::IValue::Tuple(results) = p_net
+            let tch::IValue::Tuple(results) = p_net
                     .forward_is(&[tch::IValue::Tensor(obs)])
                     .unwrap() else {panic!("Invalid output.")};
-                let tch::IValue::Tensor(action_probs_cont) = &results[0] else {panic!("Invalid output.")};
-                let tch::IValue::Tensor(action_probs_disc) = &results[1] else {panic!("Invalid output.")};
-                let action_cont = action_probs_cont.squeeze()
-                    + Tensor::zeros([4], options).normal_(0.0, 1.0) * action_scale as f64;
-                let action_disc = sample(action_probs_disc)[0];
-                let (obs_, _, done_, trunc_) = self.env.step(&action_cont, action_disc);
-                (done, trunc) = (done_, trunc_);
-                obs = obs_.unsqueeze(0);
-            }
-            let data_item: ndarray::ArrayD<f32> =
-                Tensor::concatenate(&[self.env.scaled_canvas().unsqueeze(0), ref_img], 0)
+            let tch::IValue::Tensor(action_probs_cont) = &results[0] else {panic!("Invalid output.")};
+            let tch::IValue::Tensor(action_probs_disc) = &results[1] else {panic!("Invalid output.")};
+            let action_cont = action_probs_cont
+                + Tensor::zeros([self.env.num_envs as i64, 4], options).normal_(0.0, 1.0) * action_scale as f64;
+            let action_disc = sample(action_probs_disc);
+            let (obs_, _, done, trunc) = self.env.step(&action_cont, &action_disc);
+            obs = Tensor::stack(&obs_, 0);
+
+            // If any images have finished, add them to our array
+            for (i, (&done, trunc)) in done.iter().zip(trunc).enumerate() {
+                if done || trunc {
+                    let ref_img = &ref_imgs[last_ref_indices[i]];
+                    let ref_img = Tensor::try_from(ref_img).unwrap();
+                    let data_item: ndarray::ArrayD<f32> = Tensor::concatenate(
+                        &[self.env.envs[i].scaled_canvas().unsqueeze(0), ref_img],
+                        0,
+                    )
                     .as_ref()
                     .try_into()
                     .unwrap();
-            img_arr.push(data_item.into_dimensionality().unwrap());
+                    img_arr.push(data_item.into_dimensionality().unwrap());
+                    bar.inc(1);
+                }
+            }
+
+            // Update last ref indices
+            for i in 0..self.env.num_envs {
+                last_ref_indices[i] = self.env.envs[i].ref_img_index;
+            }
         }
+        bar.finish();
+
+        // Stack images
         ndarray::stack(
             ndarray::Axis(0),
             &img_arr.iter().map(|x| x.view()).collect::<Vec<_>>(),

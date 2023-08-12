@@ -9,6 +9,7 @@ class TrainingContext:
         ref_img_path: str,
         p_net_path: str,
         reward_model_path: str,
+        num_envs: int,
         max_strokes: Optional[int] = None,
     ): ...
     def gen_imgs(self, num_imgs: int, action_scale: float) -> np.ndarray: ...

@@ -241,7 +241,6 @@ if not args.test:
 
 # Initialize discriminator
 d_net = Discriminator()
-d_net.to(device)
 d_net.eval()
 d_opt = torch.optim.Adam(d_net.parameters(), lr=d_lr)
 
@@ -399,25 +398,26 @@ p_opt = torch.optim.Adam(p_net.parameters(), lr=p_lr)
 # Initialize training context
 p_net_path = "temp/training/p_net.ptc"
 d_net_path = "temp/training/d_net.ptc"
-sample_input = obs_space.sample()
+sample_input_p = torch.from_numpy(obs_space.sample()).unsqueeze(0)
 traced = torch.jit.trace(
     p_net,
     (
-        torch.from_numpy(sample_input).unsqueeze(0),
+        sample_input_p,
     ),
 )
 traced.save(p_net_path)
 
-sample_input = torch.zeros([1, 4, img_size, img_size])
+sample_input_d = torch.zeros([1, 4, img_size, img_size])
+d_net.cpu()
 traced = torch.jit.trace(
-    d_net.cpu(),
+    d_net,
     (
-        sample_input,
+        sample_input_d,
     ),
 )
-d_net.to(device)
 traced.save(d_net_path)
-training_context = TrainingContext(img_size, canvas_size, "temp/all_outputs", p_net_path, d_net_path, max_strokes)
+training_context = TrainingContext(img_size, canvas_size, "temp/all_outputs", p_net_path, d_net_path, 32, max_strokes)
+d_net.to(device)
 
 # If resuming, load state dicts
 if args.resume:
@@ -447,37 +447,36 @@ done = False
 orig_action_scale = action_scale
 for step in tqdm(range(iterations), position=0):
     # Export models
-    sample_input = obs_space.sample()
     traced = torch.jit.trace(
         p_net,
         (
-            torch.from_numpy(sample_input).unsqueeze(0),
+            sample_input_p,
         ),
     )
     traced.save(p_net_path)
 
-    sample_input = torch.zeros([1, 4, img_size, img_size]).to(device)
+    d_net.cpu()
     traced = torch.jit.trace(
         d_net,
         (
-            sample_input,
+            sample_input_d,
         ),
     )
-    d_net.to(device)
     traced.save(d_net_path)
     generated = training_context.gen_imgs(disc_ds_size // 2, action_scale) # Shape: (disc_ds_size / 2, 4 img_size, img_size)
+    d_net.to(device)
 
     # Training the discriminator
-    ds_indices = np.random.permutation(len(ref_imgs))[:disc_ds_size].tolist()
+    ds_indices = np.random.permutation(len(ref_imgs))[:disc_ds_size // 2].tolist()
     ds_refs = np.stack(
         [ref_imgs[i] for i in ds_indices]
     )  # Shape: (disc_ds_size, 3, img_size, img_size)
     ground_truth = np.expand_dims(
-        np.stack([stroke_imgs[i] for i in ds_indices[: disc_ds_size // 2]]), 1
+        np.stack([stroke_imgs[i] for i in ds_indices]), 1
     )  # Shape: (disc_ds_size / 2, 1 img_size, img_size)
     ds_x_real = (
         torch.from_numpy(
-            np.concatenate([ds_refs[: disc_ds_size // 2], ground_truth], 1)
+            np.concatenate([ds_refs, ground_truth], 1)
         )
         .float()
         .to(device)

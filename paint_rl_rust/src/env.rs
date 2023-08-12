@@ -13,6 +13,7 @@ pub struct SimCanvasEnv {
     counter: u32,
     ref_imgs: Arc<RwLock<Vec<ndarray::Array3<f32>>>>,
     ref_img: Tensor,
+    pub ref_img_index: usize,
     max_strokes: u32,
     last_pen_down: bool,
     prev_frame: Tensor,
@@ -53,6 +54,7 @@ impl SimCanvasEnv {
             prev_frame: Tensor::zeros([2, scaled_size as i64, scaled_size as i64], options),
             last_score: 0.0,
             reward_model: reward_model.clone(),
+            ref_img_index: 0,
         }
     }
 
@@ -172,6 +174,7 @@ impl SimCanvasEnv {
 
     /// Resets the environment with an index.
     pub fn reset_with_index(&mut self, index: usize) -> Tensor {
+        self.ref_img_index = index;
         let _guard = tch::no_grad_guard();
         let options = (tch::Kind::Float, tch::Device::Cpu);
         self.counter = 0;
@@ -206,6 +209,7 @@ impl SimCanvasEnv {
         )
         .unsqueeze(0)
         .to_kind(tch::Kind::Float);
+    
         self.last_score = self
             .reward_model
             .read()
