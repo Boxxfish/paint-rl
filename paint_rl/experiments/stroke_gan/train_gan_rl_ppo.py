@@ -40,7 +40,7 @@ _: Any
 # Hyperparameters
 num_envs = 32  # Number of environments to step through at once during sampling.
 train_steps = 256  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
-iterations = 1000  # Number of sample/train iterations.
+iterations = 100  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
 train_batch_size = 1024  # Minibatch size while training models.
 discount = 0.99  # Discount factor applied to rewards.
@@ -272,6 +272,7 @@ test_env = RefStrokeEnv(
 
 # If evaluating, run the sim
 if args.eval:
+    d_net.to(device)
     eval_done = False
     d_net.load_state_dict(torch.load("temp/d_net.pt"))
     test_env = RefStrokeEnv(
@@ -401,9 +402,7 @@ d_net_path = "temp/training/d_net.ptc"
 sample_input_p = torch.from_numpy(obs_space.sample()).unsqueeze(0)
 traced = torch.jit.trace(
     p_net,
-    (
-        sample_input_p,
-    ),
+    (sample_input_p,),
 )
 traced.save(p_net_path)
 
@@ -411,12 +410,19 @@ sample_input_d = torch.zeros([1, 4, img_size, img_size])
 d_net.cpu()
 traced = torch.jit.trace(
     d_net,
-    (
-        sample_input_d,
-    ),
+    (sample_input_d,),
 )
 traced.save(d_net_path)
-training_context = TrainingContext(img_size, canvas_size, "temp/all_outputs", p_net_path, d_net_path, 64, max_strokes)
+training_context = TrainingContext(
+    img_size,
+    canvas_size,
+    "temp/all_outputs",
+    p_net_path,
+    d_net_path,
+    64,
+    max_strokes,
+    8,
+)
 d_net.to(device)
 
 # If resuming, load state dicts
@@ -449,25 +455,23 @@ for step in tqdm(range(iterations), position=0):
     # Export models
     traced = torch.jit.trace(
         p_net,
-        (
-            sample_input_p,
-        ),
+        (sample_input_p,),
     )
     traced.save(p_net_path)
 
     d_net.cpu()
     traced = torch.jit.trace(
         d_net,
-        (
-            sample_input_d,
-        ),
+        (sample_input_d,),
     )
     traced.save(d_net_path)
-    generated = training_context.gen_imgs(disc_ds_size // 2, action_scale) # Shape: (disc_ds_size / 2, 4 img_size, img_size)
+    generated = training_context.gen_imgs(
+        disc_ds_size // 2, action_scale
+    )  # Shape: (disc_ds_size / 2, 4 img_size, img_size)
     d_net.to(device)
 
     # Training the discriminator
-    ds_indices = np.random.permutation(len(ref_imgs))[:disc_ds_size // 2].tolist()
+    ds_indices = np.random.permutation(len(ref_imgs))[: disc_ds_size // 2].tolist()
     ds_refs = np.stack(
         [ref_imgs[i] for i in ds_indices]
     )  # Shape: (disc_ds_size, 3, img_size, img_size)
@@ -475,17 +479,11 @@ for step in tqdm(range(iterations), position=0):
         np.stack([stroke_imgs[i] for i in ds_indices]), 1
     )  # Shape: (disc_ds_size / 2, 1 img_size, img_size)
     ds_x_real = (
-        torch.from_numpy(
-            np.concatenate([ds_refs, ground_truth], 1)
-        )
-        .float()
-        .to(device)
+        torch.from_numpy(np.concatenate([ds_refs, ground_truth], 1)).float().to(device)
     )  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
     ds_y_real = torch.from_numpy(np.ones([disc_ds_size // 2])).float().to(device)
     ds_x_generated = (
-        torch.from_numpy(generated)
-        .float()
-        .to(device)
+        torch.from_numpy(generated).float().to(device)
     )  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
     ds_y_generated = torch.zeros([disc_ds_size // 2], dtype=torch.float, device=device)
     del ds_refs, ground_truth, generated

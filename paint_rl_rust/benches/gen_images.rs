@@ -24,6 +24,7 @@ fn benchmark(c: &mut Criterion) {
                     "../temp/training/d_net.ptc",
                     50,
                     32,
+                    4,
                     Some(100),
                 )
             }

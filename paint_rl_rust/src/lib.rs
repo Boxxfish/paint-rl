@@ -15,10 +15,11 @@ pub mod sim_canvas;
 
 #[pyclass]
 pub struct TrainingContext {
-    env: VecEnv,
+    w_ctxs: Vec<WorkerContext>,
     ref_imgs: Arc<RwLock<Vec<ndarray::Array3<f32>>>>,
     reward_model_path: String,
     p_net_path: String,
+    num_workers: usize,
 }
 
 #[pymethods]
@@ -32,6 +33,7 @@ impl TrainingContext {
         reward_model_path: &str,
         max_strokes: u32,
         num_envs: u32,
+        num_workers: usize,
         max_refs: Option<u64>,
     ) -> Self {
         // Load all images
@@ -64,20 +66,27 @@ impl TrainingContext {
         }
         let ref_imgs = Arc::new(RwLock::new(ref_imgs));
 
-        // Set up environment
+        // Set up workers
         let reward_model = Arc::new(RwLock::new(tch::CModule::load(reward_model_path).unwrap()));
-        let env_ = VecEnv::new(
-            (0..num_envs)
-                .map(|_| SimCanvasEnv::new(canvas_size, img_size, 4, &ref_imgs, max_strokes))
-                .collect(),
-            &reward_model,
-        );
+        let w_ctxs = (0..num_workers)
+            .map(|_| WorkerContext {
+                env: VecEnv::new(
+                    (0..(num_envs / num_workers as u32))
+                        .map(|_| {
+                            SimCanvasEnv::new(canvas_size, img_size, 4, &ref_imgs, max_strokes)
+                        })
+                        .collect(),
+                    &reward_model,
+                ),
+            })
+            .collect();
 
         Self {
             ref_imgs,
-            env: env_,
             p_net_path: p_net_path.into(),
             reward_model_path: reward_model_path.into(),
+            num_workers,
+            w_ctxs,
         }
     }
 
@@ -90,47 +99,65 @@ impl TrainingContext {
     ) -> Py<PyArray<f32, Dim<[usize; 4]>>> {
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let _guard = tch::no_grad_guard();
-        let mut rng = rand::thread_rng();
-        let ref_imgs = self.ref_imgs.read().unwrap();
-        let mut ref_indices: Vec<_> = (0..ref_imgs.len()).collect();
-        ref_indices.shuffle(&mut rng);
+
+        let p_net = Arc::new(RwLock::new(tch::CModule::load(&self.p_net_path).unwrap()));
         let mut img_arr: Vec<ndarray::Array3<f32>> = Vec::with_capacity(num_imgs);
         let reward_model = Arc::new(RwLock::new(
             tch::CModule::load(&self.reward_model_path).unwrap(),
         ));
-        self.env.reward_model = reward_model;
-        let p_net = tch::CModule::load(&self.p_net_path).unwrap();
-        let mut obs = Tensor::stack(&self.env.reset(), 0);
+        for w_ctx in &mut self.w_ctxs {
+            w_ctx.env.reward_model = reward_model.clone();
+        }
+        let mut handles = Vec::new();
         let bar = ProgressBar::new(num_imgs as u64);
-        let obs_select = Tensor::from_slice(&[4, 5, 6, 2]);
-        while img_arr.len() < num_imgs {
-            // Generate image
-            let tch::IValue::Tuple(results) = p_net
+        for mut w_ctx in self.w_ctxs.drain(0..self.w_ctxs.len()) {
+            let p_net = p_net.clone();
+            let num_workers = self.num_workers;
+            let bar = bar.clone();
+            let handle = std::thread::spawn(move || {
+                let _guard = tch::no_grad_guard();
+                let mut obs = Tensor::stack(&w_ctx.env.reset(), 0);
+                let mut img_arr_thread: Vec<ndarray::Array3<f32>> = Vec::with_capacity(num_imgs);
+                let obs_select = Tensor::from_slice(&[4, 5, 6, 2]);
+                while img_arr_thread.len() < num_imgs / num_workers {
+                    // Choose player action
+                    let tch::IValue::Tuple(results) = p_net.read().unwrap()
                     .forward_is(&[tch::IValue::Tensor(obs.copy())])
                     .unwrap() else {panic!("Invalid output.")};
-            let tch::IValue::Tensor(action_probs_cont) = &results[0] else {panic!("Invalid output.")};
-            let tch::IValue::Tensor(action_probs_disc) = &results[1] else {panic!("Invalid output.")};
-            let action_cont = action_probs_cont
-                + Tensor::zeros([self.env.num_envs as i64, 4], options).normal_(0.0, 1.0)
-                    * action_scale as f64;
-            let action_disc = sample(action_probs_disc);
+                    let tch::IValue::Tensor(action_probs_cont) = &results[0] else {panic!("Invalid output.")};
+                    let tch::IValue::Tensor(action_probs_disc) = &results[1] else {panic!("Invalid output.")};
+                    let action_cont = action_probs_cont
+                        + Tensor::zeros([w_ctx.env.num_envs as i64, 4], options).normal_(0.0, 1.0)
+                            * action_scale as f64;
+                    let action_disc = sample(action_probs_disc);
 
-            let (obs_, _, done, trunc) = self.env.step(&action_cont, &action_disc);
+                    let (obs_, _, done, trunc) = w_ctx.env.step(&action_cont, &action_disc);
 
-            // If any images have finished, add them to our array
-            for (i, (&done, trunc)) in done.iter().zip(trunc).enumerate() {
-                if done || trunc {
-                    let data_item: ndarray::ArrayD<f32> = obs
-                        .get(i as i64)
-                        .index_select(0, &obs_select)
-                        .as_ref()
-                        .try_into()
-                        .unwrap();
-                    img_arr.push(data_item.into_dimensionality().unwrap());
-                    bar.inc(1);
+                    // If any images have finished, add them to our array
+                    for (i, (&done, trunc)) in done.iter().zip(trunc).enumerate() {
+                        if done || trunc {
+                            let data_item: ndarray::ArrayD<f32> = obs
+                                .get(i as i64)
+                                .index_select(0, &obs_select)
+                                .as_ref()
+                                .try_into()
+                                .unwrap();
+                            img_arr_thread.push(data_item.into_dimensionality().unwrap());
+                            bar.inc(1);
+                        }
+                    }
+                    obs = Tensor::stack(&obs_, 0);
                 }
-            }
-            obs = Tensor::stack(&obs_, 0);
+                (w_ctx, img_arr_thread)
+            });
+            handles.push(handle);
+        }
+
+        // Process data once finished
+        for handle in handles {
+            let (w_ctx, mut img_arr_thread) = handle.join().unwrap();
+            self.w_ctxs.push(w_ctx);
+            img_arr.append(&mut img_arr_thread);
         }
         bar.finish();
 
@@ -143,6 +170,11 @@ impl TrainingContext {
         .into_pyarray(py)
         .to_owned()
     }
+}
+
+/// State of each worker.
+pub struct WorkerContext {
+    pub env: VecEnv,
 }
 
 /// Returns a list of actions given the probabilities.
