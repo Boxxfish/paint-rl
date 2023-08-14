@@ -144,6 +144,9 @@ impl TrainingContext {
                                 .unwrap();
                             img_arr_thread.push(data_item.into_dimensionality().unwrap());
                             bar.inc(1);
+                            if img_arr_thread.len() >= num_imgs / num_workers {
+                                break;
+                            }
                         }
                     }
                     obs = Tensor::stack(&obs_, 0);

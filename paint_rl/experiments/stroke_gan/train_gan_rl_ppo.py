@@ -41,7 +41,7 @@ _: Any
 num_envs = 32  # Number of environments to step through at once during sampling.
 train_steps = 256  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 100  # Number of sample/train iterations.
-train_iters = 2  # Number of passes over the samples collected.
+train_iters = 1  # Number of passes over the samples collected.
 train_batch_size = 1024  # Minibatch size while training models.
 discount = 0.99  # Discount factor applied to rewards.
 lambda_ = 0.99  # Lambda for GAE.
@@ -49,13 +49,13 @@ epsilon = 0.2  # Epsilon for importance sample clipping.
 max_eval_steps = 300  # Number of eval runs to average over.
 eval_steps = 4  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
-p_lr = 0.00001  # Learning rate of the policy net.
+p_lr = 0.00003  # Learning rate of the policy net.
 d_lr = 0.001  # Learning rate of the discriminator.
 action_scale = 0.02  # Scale for actions.
-gen_steps = 4  # Number of generator steps per iteration.
+gen_steps = 1  # Number of generator steps per iteration.
 disc_steps = 2  # Number of discriminator steps per iteration.
-disc_ds_size = 2048  # Size of the discriminator dataset. Half will be generated.
-disc_batch_size = 128  # Batch size for the discriminator.
+disc_ds_size = 1024  # Size of the discriminator dataset. Half will be generated.
+disc_batch_size = 64  # Batch size for the discriminator.
 stroke_width = 4
 canvas_size = 256
 device = torch.device("cuda")  # Device to use during training.
@@ -479,14 +479,17 @@ for step in tqdm(range(iterations), position=0):
         np.stack([stroke_imgs[i] for i in ds_indices]), 1
     )  # Shape: (disc_ds_size / 2, 1 img_size, img_size)
     ds_x_real = (
-        torch.from_numpy(np.concatenate([ds_refs, ground_truth], 1)).float().to(device)
+        torch.from_numpy(np.concatenate([ds_refs, ground_truth], 1)).float()
     )  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
-    ds_y_real = torch.from_numpy(np.ones([disc_ds_size // 2])).float().to(device)
+    ds_y_real_batch = torch.from_numpy(np.ones([disc_batch_size])).float().to(device)
     ds_x_generated = (
-        torch.from_numpy(generated).float().to(device)
+        torch.from_numpy(generated).float()
     )  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
-    ds_y_generated = torch.zeros([disc_ds_size // 2], dtype=torch.float, device=device)
+    ds_y_generated_batch = torch.zeros([disc_batch_size], dtype=torch.float, device=device)
     del ds_refs, ground_truth, generated
+    noise = torch.distributions.Normal(0.0, 0.1).sample(ds_x_real.shape)
+    ds_x_real = torch.clip(ds_x_real + noise, 0.0, 1.0)
+    ds_x_generated = torch.clip(ds_x_generated + noise, 0.0, 1.0)
     d_crit = nn.BCELoss()
     num_batches = disc_ds_size // (2 * disc_batch_size)
     avg_disc_loss_real = 0.0
@@ -499,8 +502,8 @@ for step in tqdm(range(iterations), position=0):
         # Train on generated
         ds_x_generated = ds_x_generated[epoch_indices]
         for i in range(num_batches):
-            batch_x = ds_x_generated[i * disc_batch_size : (i + 1) * disc_batch_size]
-            batch_y = ds_y_generated[i * disc_batch_size : (i + 1) * disc_batch_size]
+            batch_x = ds_x_generated[i * disc_batch_size : (i + 1) * disc_batch_size].to(device)
+            batch_y = ds_y_generated_batch
             d_opt.zero_grad()
             pred_y = d_net(batch_x).squeeze(1)
             loss = d_crit(pred_y, batch_y)
@@ -511,8 +514,8 @@ for step in tqdm(range(iterations), position=0):
         # Train on real
         ds_x_real = ds_x_real[epoch_indices]
         for i in range(num_batches):
-            batch_x = ds_x_real[i * disc_batch_size : (i + 1) * disc_batch_size]
-            batch_y = ds_y_real[i * disc_batch_size : (i + 1) * disc_batch_size]
+            batch_x = ds_x_real[i * disc_batch_size : (i + 1) * disc_batch_size].to(device)
+            batch_y = ds_y_real_batch
             d_opt.zero_grad()
             pred_y = d_net(batch_x).squeeze(1)
             loss = d_crit(pred_y, batch_y)
@@ -588,6 +591,7 @@ for step in tqdm(range(iterations), position=0):
             lambda_,
             epsilon,
             action_scale,
+            gradient_steps=2
         )
         total_p_loss += step_p_loss
         total_v_loss += step_v_loss

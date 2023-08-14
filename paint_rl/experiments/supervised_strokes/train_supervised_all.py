@@ -146,8 +146,21 @@ def stroke(
 ) -> tuple[np.ndarray, np.ndarray]:
     stroke_channel = np.array(stroke_img) / 255.0
     pos_channel = gen_pos_channel(p1[0] * img_size, p1[1] * img_size, img_size)
-    this_frame = np.stack([stroke_channel, pos_channel])
-    ds_x.append(np.concatenate([prev_frame, this_frame, img_data]))
+    this_frame = np.stack(
+        [
+            stroke_channel + np.random.uniform(0.0, 0.1, [img_size, img_size]),
+            pos_channel,
+        ]
+    )
+    ds_x.append(
+        np.concatenate(
+            [
+                prev_frame,
+                this_frame,
+                img_data + np.random.uniform(0.0, 0.1, [3, img_size, img_size]),
+            ]
+        )
+    )
     cont_actions.append(np.concatenate([p2, p3]))
     disc_actions.append(0 if up else 1)
     last_pos = p3 + np.random.normal(0.0, 0.02, [2])
@@ -267,12 +280,12 @@ def main():
             obs = torch.from_numpy(env.reset()[0]).float().unsqueeze(0)
             while True:
                 cont_action, disc_action = net(obs)
-                obs_, _, done, _, _ = env.step(
+                obs_, _, done, trunc, _ = env.step(
                     (cont_action.squeeze().numpy(), disc_action.argmax().item())
                 )
                 env.render()
                 obs = torch.from_numpy(obs_).float().unsqueeze(0)
-                if done:
+                if done or trunc:
                     obs = torch.from_numpy(env.reset()[0]).float().unsqueeze(0)
 
     # Load dataset
