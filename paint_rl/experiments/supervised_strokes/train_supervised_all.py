@@ -95,27 +95,34 @@ class SharedNet(nn.Module):
 
 
 class StrokeNet(nn.Module):
-    def __init__(self, size: int):
+    def __init__(self, size: int, quant_size: int):
         nn.Module.__init__(self)
         self.shared = SharedNet(size)
-        self.continuous = nn.Sequential(
-            nn.Linear(256, 256),
-            nn.ReLU(),
-            nn.Linear(256, 4),
-            nn.Sigmoid(),
-        )
-        self.discrete = nn.Sequential(
+        self.pen_down = nn.Sequential(
             nn.Linear(256, 256),
             nn.ReLU(),
             nn.Linear(256, 2),
             nn.LogSoftmax(1),
         )
+        self.stroke_mid = nn.Sequential(
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, quant_size * quant_size),
+            nn.LogSoftmax(1),
+        )
+        self.stroke_end = nn.Sequential(
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, quant_size * quant_size),
+            nn.LogSoftmax(1),
+        )
 
     def forward(self, x):
         x = self.shared(x)
-        cont = self.continuous(x)
-        disc = self.discrete(x)
-        return cont, disc
+        pen_down = self.pen_down(x)
+        stroke_mid = self.stroke_mid(x)
+        stroke_end = self.stroke_end(x)
+        return stroke_mid, stroke_end, pen_down
 
 
 def gen_pos_channel(x: int, y: int, img_size: int) -> np.ndarray:
@@ -138,10 +145,12 @@ def stroke(
     stroke_img,
     stroke_draw,
     ds_x,
-    cont_actions,
-    disc_actions,
+    stroke_mid,
+    stroke_end,
+    pen_down,
     img_size,
     prev_frame,
+    quant_size,
     up=False,
 ) -> tuple[np.ndarray, np.ndarray]:
     stroke_channel = np.array(stroke_img) / 255.0
@@ -161,8 +170,9 @@ def stroke(
             ]
         )
     )
-    cont_actions.append(np.concatenate([p2, p3]))
-    disc_actions.append(0 if up else 1)
+    stroke_mid.append(quantize_point(p2, quant_size))
+    stroke_end.append(quantize_point(p3, quant_size))
+    pen_down.append(0 if up else 1)
     last_pos = p3 + np.random.normal(0.0, 0.02, [2])
 
     if not up:
@@ -177,14 +187,20 @@ def stroke(
     return this_frame, last_pos
 
 
+def quantize_point(point: np.ndarray, quant_size: int) -> int:
+    q_point = np.clip(((point * quant_size).round()).astype(int), 0, quant_size - 1)
+    return int(q_point[1] * quant_size + q_point[0])
+
+
 def load_random_ds(
-    valid_size: int, size: int, img_size: int, orig_img_size: int
-) -> tuple[Tensor, Tensor, Tensor]:
+    valid_size: int, size: int, img_size: int, orig_img_size: int, quant_size: int
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     indices = list(range(valid_size, 10_000))
     random.shuffle(indices)
     ds_x: list[np.ndarray] = []
-    cont_actions: list[np.ndarray] = []
-    disc_actions: list[np.ndarray] = []
+    stroke_mid: list[np.ndarray] = []
+    stroke_end: list[np.ndarray] = []
+    pen_down: list[np.ndarray] = []
     for i in tqdm(indices):
         if len(ds_x) == size:
             break
@@ -227,10 +243,12 @@ def load_random_ds(
                     stroke_img,
                     stroke_draw,
                     ds_x if will_add else [],
-                    cont_actions if will_add else [],
-                    disc_actions if will_add else [],
+                    stroke_mid if will_add else [],
+                    stroke_end if will_add else [],
+                    pen_down if will_add else [],
                     img_size,
                     prev_frame,
+                    quant_size,
                     up=d == 0,
                 )
         except KeyboardInterrupt:
@@ -242,19 +260,46 @@ def load_random_ds(
     #     plt.imshow(ds_x[i].mean(0))
     #     plt.show()
 
-    cont_actions_ = torch.from_numpy(np.stack(cont_actions))
-    del cont_actions
-    disc_actions_ = torch.from_numpy(np.stack(disc_actions))
-    del disc_actions
+    stroke_mid_actions = torch.from_numpy(np.stack(stroke_mid))
+    del stroke_mid
+    stroke_end_actions = torch.from_numpy(np.stack(stroke_end))
+    del stroke_end
+    pen_down_actions = torch.from_numpy(np.stack(pen_down))
+    del pen_down
 
     ds_x_ = torch.from_numpy(np.stack(ds_x))
     del ds_x
-    return (ds_x_.float(), cont_actions_.float(), disc_actions_)
+    return (ds_x_.float(), stroke_mid_actions, stroke_end_actions, pen_down_actions)
+
+
+# Converts discrete stroke probs to a continuous action.
+# These can be directly outputted from the model.
+def disc_probs_to_cont_actions(
+    stroke_mid: np.ndarray, stroke_end: np.ndarray, quant_size: int
+) -> np.ndarray:
+    mid_index = stroke_mid.argmax(1, keepdims=True)
+    end_index = stroke_end.argmax(1, keepdims=True)
+    mid_y = mid_index // quant_size
+    mid_x = mid_index - mid_y * quant_size
+    end_y = end_index // quant_size
+    end_x = end_index - end_y * quant_size
+    return np.concatenate([mid_x, mid_y, end_x, end_y], 1) / quant_size
+
+# Converts discrete stroke actions to a continuous one.
+def disc_actions_to_cont_actions(
+    mid_index: np.ndarray, end_index: np.ndarray, quant_size: int
+) -> np.ndarray:
+    mid_y = mid_index // quant_size
+    mid_x = mid_index - mid_y * quant_size
+    end_y = end_index // quant_size
+    end_x = end_index - end_y * quant_size
+    return np.concatenate([mid_x, mid_y, end_x, end_y], 1) / quant_size
 
 
 def main():
     orig_img_size = 256
     img_size = 64
+    quant_size = 32
 
     # Argument parsing
     parser = ArgumentParser()
@@ -274,14 +319,17 @@ def main():
             img_data = np.array(img).transpose(2, 0, 1) / 255.0
             imgs.append(img_data)
         with torch.no_grad():
-            net = StrokeNet(img_size)
+            net = StrokeNet(img_size, quant_size)
             net.load_state_dict(torch.load("temp/stroke_net.pt"))
             env = RefStrokeEnv(img_size, img_size, imgs, None, "human", max_strokes=100)
             obs = torch.from_numpy(env.reset()[0]).float().unsqueeze(0)
             while True:
-                cont_action, disc_action = net(obs)
+                stroke_mid, stroke_end, pen_down = net(obs)
+                cont_action = disc_probs_to_cont_actions(
+                    stroke_mid, stroke_end, quant_size
+                ).squeeze()
                 obs_, _, done, trunc, _ = env.step(
-                    (cont_action.squeeze().numpy(), disc_action.argmax().item())
+                    (cont_action, pen_down.argmax().item())
                 )
                 env.render()
                 obs = torch.from_numpy(obs_).float().unsqueeze(0)
@@ -290,11 +338,13 @@ def main():
 
     # Load dataset
     ds_x = []
-    cont_actions = []
-    disc_actions = []
+    stroke_mid_actions = []
+    stroke_end_actions = []
+    pen_down_actions = []
     valid_ds_x = []
-    valid_cont_actions = []
-    valid_disc_actions = []
+    valid_stroke_mid_actions = []
+    valid_stroke_end_actions = []
+    valid_pen_down_actions = []
     valid_size = 8
     print("Loading data.")
     for i in tqdm(range(1500)):
@@ -322,10 +372,12 @@ def main():
                     stroke_img,
                     stroke_draw,
                     ds_x if not valid else valid_ds_x,
-                    cont_actions if not valid else valid_cont_actions,
-                    disc_actions if not valid else valid_disc_actions,
+                    stroke_mid_actions if not valid else valid_stroke_mid_actions,
+                    stroke_end_actions if not valid else valid_stroke_end_actions,
+                    pen_down_actions if not valid else valid_pen_down_actions,
                     img_size,
                     prev_frame,
+                    quant_size,
                     up=d == 0,
                 )
             # plt.imshow(ds_x[-1][:3].transpose(1, 2, 0))
@@ -335,18 +387,22 @@ def main():
         except Exception as e:
             print(f"Error processing {i}: {e}")
     train_x = torch.from_numpy(np.stack(ds_x))
-    train_cont = torch.from_numpy(np.stack(cont_actions))
-    train_disc = torch.from_numpy(np.stack(disc_actions))
+    train_stroke_mid = torch.from_numpy(np.stack(stroke_mid_actions))
+    train_stroke_end = torch.from_numpy(np.stack(stroke_end_actions))
+    train_pen_down = torch.from_numpy(np.stack(pen_down_actions))
     valid_x = torch.from_numpy(np.stack(valid_ds_x))
-    valid_cont = torch.from_numpy(np.stack(valid_cont_actions))
-    valid_disc = torch.from_numpy(np.stack(valid_disc_actions))
+    valid_stroke_mid = torch.from_numpy(np.stack(valid_stroke_mid_actions))
+    valid_stroke_end = torch.from_numpy(np.stack(valid_stroke_end_actions))
+    valid_pen_down = torch.from_numpy(np.stack(valid_pen_down_actions))
     del (
         ds_x,
-        cont_actions,
-        disc_actions,
+        stroke_mid_actions,
+        stroke_end_actions,
+        pen_down_actions,
         valid_ds_x,
-        valid_cont_actions,
-        valid_disc_actions,
+        valid_stroke_mid_actions,
+        valid_stroke_end_actions,
+        valid_pen_down_actions,
     )
     train_size = train_x.shape[0]
     print("Train size:", train_size)
@@ -361,7 +417,7 @@ def main():
     )
 
     # Train model
-    net = StrokeNet(img_size).cuda().train()
+    net = StrokeNet(img_size, quant_size).cuda().train()
     if args.resume:
         net.load_state_dict(torch.load("temp/stroke_net.pt"))
     opt = torch.optim.Adam(net.parameters(), lr=0.0001)
@@ -370,17 +426,16 @@ def main():
     )
     batch_size = 512
     train_x = train_x.float()
-    train_cont = train_cont.float()
-    train_disc = train_disc
     valid_batch_x = valid_x.float().cuda()
-    valid_batch_cont = valid_cont.float().cuda()
-    valid_batch_disc = valid_disc.cuda()
+    valid_batch_stroke_mid = valid_stroke_mid.cuda()
+    valid_batch_stroke_end = valid_stroke_end.cuda()
+    valid_batch_pen_down = valid_pen_down.cuda()
     disc_crit = nn.NLLLoss()
-    cont_scale = 40.0
     for j in tqdm(range(1000000)):
         mean_loss = 0.0
-        mean_cont_loss = 0.0
-        mean_disc_loss = 0.0
+        mean_mid_loss = 0.0
+        mean_end_loss = 0.0
+        mean_down_loss = 0.0
         num_batches = train_size // batch_size
         indices = torch.from_numpy(
             np.random.choice(train_size, train_size, replace=False)
@@ -388,45 +443,64 @@ def main():
         for i in range(num_batches):
             batch_indices = indices[i * batch_size : (i + 1) * batch_size]
             batch_x = train_x[batch_indices].cuda()
-            batch_cont = train_cont[batch_indices].cuda()
-            batch_disc = train_disc[batch_indices].cuda()
-            cont_out, disc_out = net(batch_x)
-            cont_loss = ((cont_out - batch_cont) ** 2).mean()
-            disc_loss = disc_crit(disc_out, batch_disc.type(torch.long))
-            loss = cont_scale * cont_loss + disc_loss
+            batch_mid = train_stroke_mid[batch_indices].cuda()
+            batch_end = train_stroke_end[batch_indices].cuda()
+            batch_pen_down = train_pen_down[batch_indices].cuda()
+            stroke_mid, stroke_end, pen_down = net(batch_x)
+            # print(batch_mid.min(), batch_mid.max(), batch_end.min(), batch_end.max())
+            stroke_mid_loss = disc_crit(stroke_mid, batch_mid.type(torch.long))
+            stroke_end_loss = disc_crit(stroke_end, batch_end.type(torch.long))
+            pen_down_loss = disc_crit(pen_down, batch_pen_down.type(torch.long))
+            loss = stroke_mid_loss + stroke_end_loss + pen_down_loss
             opt.zero_grad()
             loss.backward()
             opt.step()
             mean_loss += loss.item()
-            mean_cont_loss += cont_loss
-            mean_disc_loss += disc_loss
+            mean_mid_loss += stroke_mid_loss
+            mean_end_loss += stroke_end_loss
+            mean_down_loss += pen_down_loss
         mean_loss /= num_batches
-        mean_cont_loss /= num_batches
-        mean_disc_loss /= num_batches
+        mean_mid_loss /= num_batches
+        mean_end_loss /= num_batches
+        mean_down_loss /= num_batches
 
         # Evaluate
         with torch.no_grad():
-            valid_cont, valid_disc = net(valid_batch_x)
-            valid_loss_cont = ((valid_cont - valid_batch_cont) ** 2).mean()
-            valid_loss_disc = disc_crit(valid_disc, valid_batch_disc.type(torch.long))
-            valid_loss = cont_scale * valid_loss_cont + valid_loss_disc
+            valid_mid, valid_end, valid_down = net(valid_batch_x)
+            valid_loss_mid = disc_crit(
+                valid_mid, valid_batch_stroke_mid.type(torch.long)
+            )
+            valid_loss_end = disc_crit(
+                valid_end, valid_batch_stroke_end.type(torch.long)
+            )
+            valid_loss_down = disc_crit(
+                valid_down, valid_batch_pen_down.type(torch.long)
+            )
+            valid_loss = valid_loss_mid + valid_loss_end + valid_loss_down
             scheduler.step(valid_loss)
             wandb.log(
                 {
                     "loss": mean_loss,
                     "valid_loss": valid_loss.item(),
-                    "cont_loss": mean_cont_loss,
-                    "disc_loss": mean_disc_loss,
-                    "valid_cont_loss": valid_loss_cont.item(),
-                    "valid_disc_loss": valid_loss_disc.item(),
+                    "mean_stroke_mid_loss": mean_mid_loss,
+                    "mean_stroke_end_loss": mean_end_loss,
+                    "mean_pen_down_loss": mean_down_loss,
+                    "valid_stroke_mid_loss": valid_loss_mid.item(),
+                    "valid_stroke_end_loss": valid_loss_end.item(),
+                    "valid_pen_down_loss": valid_loss_down.item(),
                     "lr": opt.param_groups[0]["lr"],
                 }
             )
 
         if (j + 1) % 10 == 0:
-            del train_x, train_cont, train_disc
-            train_x, train_cont, train_disc = load_random_ds(
-                valid_size, train_size, img_size, orig_img_size
+            del train_stroke_mid, train_stroke_end, train_pen_down
+            (
+                train_x,
+                train_stroke_mid,
+                train_stroke_end,
+                train_pen_down,
+            ) = load_random_ds(
+                valid_size, train_size, img_size, orig_img_size, quant_size
             )
 
         # Save

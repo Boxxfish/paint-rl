@@ -125,9 +125,9 @@ class RefStrokeEnv(gym.Env):
         if self.reward_model:
             reward_inpt = (
                 torch.from_numpy(
-                    np.concatenate(
+                    add_random(np.concatenate(
                         [self.ref, (np.array(self.canvas))[np.newaxis, ...]], 0
-                    )
+                    ))
                 )
                 .unsqueeze(0)
                 .float()
@@ -180,9 +180,9 @@ class RefStrokeEnv(gym.Env):
         self.canvas_draw.rectangle((0, 0, self.canvas_size, self.canvas_size), 0)
         reward_inpt = (
             torch.from_numpy(
-                np.concatenate(
+                add_random(np.concatenate(
                     [self.ref, np.zeros([1, self.img_size, self.img_size])], 0
-                )
+                ))
             )
             .unsqueeze(0)
             .float()
@@ -226,3 +226,7 @@ class RefStrokeEnv(gym.Env):
             / img_size
         )
         return np.sqrt(pos_layer_x**2 + pos_layer_y**2)
+
+def add_random(arr: np.ndarray) -> np.ndarray:
+    rand = np.random.normal(0.0, 0.1, arr.shape)
+    return np.clip(arr + rand, 0.0, 1.0)

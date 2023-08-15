@@ -19,6 +19,9 @@ class MergeableBuffer(Protocol):
     def get_masks(self) -> torch.Tensor:
         ...
 
+    def clear(self):
+        ...
+
 
 class ActionRolloutBuffer(MergeableBuffer):
     """
@@ -268,7 +271,7 @@ class RolloutBuffer(MergeableBuffer):
 
     def samples_merged(
         self,
-        other: MergeableBuffer,
+        others: list[MergeableBuffer],
         batch_size: int,
         discount: float,
         lambda_: float,
@@ -284,7 +287,7 @@ class RolloutBuffer(MergeableBuffer):
         ]
     ]:
         """
-        Similar to the `samples` method, except the actions and probabilities from another rollout buffer will be returned as well.
+        Similar to the `samples` method, except the actions and probabilities from multiple rollout buffers will be returned as well.
         This is useful for environments with multiple action types.
         """
         with torch.no_grad():
@@ -329,7 +332,7 @@ class RolloutBuffer(MergeableBuffer):
             rand_advantages = advantages.flatten(0, 1).index_select(0, indices)
 
             # Merge actions
-            sources = (self, other)
+            sources = [self] + others
             rand_actions = [
                 source.get_actions().flatten(0, 1).index_select(0, indices)
                 for source in sources

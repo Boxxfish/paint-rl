@@ -95,7 +95,6 @@ impl TrainingContext {
         &mut self,
         py: Python<'_>,
         num_imgs: usize,
-        action_scale: f32,
     ) -> Py<PyArray<f32, Dim<[usize; 4]>>> {
         let options = (tch::Kind::Float, tch::Device::Cpu);
         let _guard = tch::no_grad_guard();
@@ -124,14 +123,32 @@ impl TrainingContext {
                     let tch::IValue::Tuple(results) = p_net.read().unwrap()
                     .forward_is(&[tch::IValue::Tensor(obs.copy())])
                     .unwrap() else {panic!("Invalid output.")};
-                    let tch::IValue::Tensor(action_probs_cont) = &results[0] else {panic!("Invalid output.")};
-                    let tch::IValue::Tensor(action_probs_disc) = &results[1] else {panic!("Invalid output.")};
-                    let action_cont = action_probs_cont
-                        + Tensor::zeros([w_ctx.env.num_envs as i64, 4], options).normal_(0.0, 1.0)
-                            * action_scale as f64;
-                    let action_disc = sample(action_probs_disc);
+                    let tch::IValue::Tensor(action_probs_mid) = &results[0] else {panic!("Invalid output.")};
+                    let tch::IValue::Tensor(action_probs_end) = &results[1] else {panic!("Invalid output.")};
+                    let tch::IValue::Tensor(action_probs_down) = &results[2] else {panic!("Invalid output.")};
+                    let action_mid = sample(action_probs_mid);
+                    let action_end = sample(action_probs_end);
+                    let action_disc = sample(action_probs_down);
 
-                    let (obs_, _, done, trunc) = w_ctx.env.step(&action_cont, &action_disc);
+                    // Compute stroke action
+                    let mut actions_cont = Vec::new();
+                    let quant_size = 32; // TODO: Pass this in as an argument
+                    for (&mid_index, end_index) in action_mid.iter().zip(action_end) {
+                        let mid_y = mid_index / quant_size;
+                        let mid_x = mid_index - mid_y * quant_size;
+                        let end_y = end_index / quant_size;
+                        let end_x = end_index - end_y * quant_size;
+                        let action_cont = Tensor::from_slice(&[
+                            mid_x as f64,
+                            mid_y as f64,
+                            end_x as f64,
+                            end_y as f64,
+                        ]) / quant_size as f64;
+                        actions_cont.push(action_cont);
+                    }
+                    let actions_cont = Tensor::stack(&actions_cont, 0);
+
+                    let (obs_, _, done, trunc) = w_ctx.env.step(&actions_cont, &action_disc);
 
                     // If any images have finished, add them to our array
                     for (i, (&done, trunc)) in done.iter().zip(trunc).enumerate() {

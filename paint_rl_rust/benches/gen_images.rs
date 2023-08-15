@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 fn gen_imgs(num_imgs: usize, training_ctx: &mut TrainingContext) {
     pyo3::prepare_freethreaded_python();
     Python::with_gil(|py| -> PyResult<()> {
-        training_ctx.gen_imgs(py, num_imgs, 0.1);
+        training_ctx.gen_imgs(py, num_imgs);
         Ok(())
     })
     .unwrap();
