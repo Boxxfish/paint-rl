@@ -1,3 +1,4 @@
+import math
 import random
 from typing import Tuple, List, Optional, Any
 import gymnasium as gym
@@ -112,14 +113,18 @@ class RefStrokeEnv(gym.Env):
         self.counter += 1
         trunc = self.counter == self.num_strokes
 
+
+        # Penalize not drawing far enough
+        reward = 0.0
+        if math.sqrt((self.last_pos[0] - end_point[0])**2 + (self.last_pos[1] - end_point[1])**2) <= 4:
+            reward += -0.2
         self.last_pos = end_point
 
         score = 0.0
-        reward = 0.0
 
         # Penalize refusing to put down strokes
         if not self.last_pen_down and not pen_down:
-            reward = -1.0
+            reward += -0.2
         self.last_pen_down = pen_down
 
         if self.reward_model:

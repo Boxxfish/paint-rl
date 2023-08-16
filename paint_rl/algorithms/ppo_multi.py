@@ -22,6 +22,7 @@ def train_ppo(
     lambda_: float,
     epsilon: float,
     gradient_steps: int = 1,
+    entropy_coeff = 0.001
 ) -> Tuple[float, float]:
     """
     Performs the PPO training loop. Returns a tuple of total policy loss and
@@ -64,18 +65,20 @@ def train_ppo(
 
             # Train policy network
             with torch.no_grad():
-                old_act_probs_discs = [Categorical(logits=action_probs_disc).log_prob(
+                old_act_probs_discs = [Categorical(probs=action_probs_disc.exp()).log_prob(
                     actions_disc.squeeze()
                 ) for action_probs_disc, actions_disc in zip(action_probs_discs, actions_discs)]
                 old_act_probs = sum(old_act_probs_discs)
             new_log_probs_discs = list(p_net(prev_states))
-            new_act_probs_discs = [Categorical(logits=new_log_probs_disc).log_prob(
+            new_act_distrs_discs = [Categorical(probs=new_log_probs_disc.exp()) for new_log_probs_disc in new_log_probs_discs]
+            new_act_probs_discs = [new_act_distr_disc.log_prob(
                 actions_disc.squeeze()
-            ) for new_log_probs_disc, actions_disc in zip(new_log_probs_discs, actions_discs)]
+            ) for new_act_distr_disc, actions_disc in zip(new_act_distrs_discs, actions_discs)]
             new_act_probs = sum(new_act_probs_discs)
             term1 = (new_act_probs - old_act_probs).exp() * advantages.squeeze()
             term2 = (1.0 + epsilon * advantages.squeeze().sign()) * advantages.squeeze()
-            p_loss = -term1.min(term2).mean() / gradient_steps
+            entropy = sum(new_act_distr.entropy().mean() for new_act_distr in new_act_distrs_discs) / len(buffer)
+            p_loss = -(term1.min(term2).mean() + entropy * entropy_coeff) / gradient_steps
             p_loss.backward()
             total_p_loss += p_loss.item()
 

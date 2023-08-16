@@ -6,7 +6,7 @@ use indicatif::{ProgressBar, ProgressIterator};
 use ndarray::Dim;
 use numpy::{IntoPyArray, PyArray};
 use pyo3::prelude::*;
-use rand::seq::SliceRandom;
+use rand::{seq::SliceRandom, Rng};
 use tch::Tensor;
 use weighted_rand::builder::{NewBuilder, WalkerTableBuilder};
 
@@ -148,11 +148,17 @@ impl TrainingContext {
                     }
                     let actions_cont = Tensor::stack(&actions_cont, 0);
 
-                    let (obs_, _, done, trunc) = w_ctx.env.step(&actions_cont, &action_disc);
+                    let (obs_, _, done, mut trunc) = w_ctx.env.step(&actions_cont, &action_disc);
+
 
                     // If any images have finished, add them to our array
-                    for (i, (&done, trunc)) in done.iter().zip(trunc).enumerate() {
-                        if done || trunc {
+                    for (i, (&done, mut trunc)) in done.iter().zip(&mut trunc).enumerate() {
+                        // Finish the image early with a certain probability
+                        if rand::thread_rng().gen::<f32>() < 0.014 {
+                            *trunc = true;
+                        }
+
+                        if done || *trunc {
                             let data_item: ndarray::ArrayD<f32> = obs
                                 .get(i as i64)
                                 .index_select(0, &obs_select)
@@ -198,12 +204,12 @@ pub struct WorkerContext {
 }
 
 /// Returns a list of actions given the probabilities.
-fn sample(logits: &Tensor) -> Vec<u32> {
-    let num_samples = logits.size()[0];
-    let num_weights = logits.size()[1] as usize;
+fn sample(log_probs: &Tensor) -> Vec<u32> {
+    let num_samples = log_probs.size()[0];
+    let num_weights = log_probs.size()[1] as usize;
     let mut generated_samples = Vec::with_capacity(num_samples as usize);
     let mut rng = rand::thread_rng();
-    let probs = logits.softmax(-1, tch::Kind::Float).clamp(0.0001, 0.9999); // Sampling breaks with really high or low values
+    let probs = log_probs.exp().clamp(0.0001, 0.9999); // Sampling breaks with really high or low values
 
     for i in 0..num_samples {
         let mut weights = vec![0.0; num_weights];
