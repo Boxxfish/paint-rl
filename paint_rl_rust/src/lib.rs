@@ -153,11 +153,6 @@ impl TrainingContext {
 
                     // If any images have finished, add them to our array
                     for (i, (&done, mut trunc)) in done.iter().zip(&mut trunc).enumerate() {
-                        // Finish the image early with a certain probability
-                        if rand::thread_rng().gen::<f32>() < 0.014 {
-                            *trunc = true;
-                        }
-
                         if done || *trunc {
                             let data_item: ndarray::ArrayD<f32> = obs
                                 .get(i as i64)
@@ -265,60 +260,60 @@ impl VecEnv {
         }
 
         // Compute last scores
-        let mut reward_inpts = Vec::with_capacity(self.num_envs);
-        for i in 0..self.num_envs {
-            let scaled_canvas = self.envs[i].scaled_canvas();
-            let reward_inpt = self.envs[i].reward_input(Some(&scaled_canvas));
-            reward_inpts.push(reward_inpt);
-        }
-        let reward_inpts = Tensor::concatenate(&reward_inpts, 0);
+        // let mut reward_inpts = Vec::with_capacity(self.num_envs);
+        // for i in 0..self.num_envs {
+        //     let scaled_canvas = self.envs[i].scaled_canvas();
+        //     let reward_inpt = self.envs[i].reward_input(Some(&scaled_canvas));
+        //     reward_inpts.push(reward_inpt);
+        // }
+        // let reward_inpts = Tensor::concatenate(&reward_inpts, 0);
 
-        let mut scores_buf: Vec<f32> = vec![0.0; self.num_envs];
-        let scores = self
-            .reward_model
-            .read()
-            .unwrap()
-            .forward_ts(&[reward_inpts])
-            .unwrap();
-        scores.copy_data(&mut scores_buf, self.num_envs);
+        // let mut scores_buf: Vec<f32> = vec![0.0; self.num_envs];
+        // let scores = self
+        //     .reward_model
+        //     .read()
+        //     .unwrap()
+        //     .forward_ts(&[reward_inpts])
+        //     .unwrap();
+        // scores.copy_data(&mut scores_buf, self.num_envs);
 
-        for (i, (done, trunc)) in dones.iter_mut().zip(&truncs).enumerate() {
-            if !(*done || *trunc) {
-                let score = scores_buf[i];
-                rewards[i] += score - self.envs[i].last_score;
-                self.envs[i].last_score = score;
+        // for (i, (done, trunc)) in dones.iter_mut().zip(&truncs).enumerate() {
+        //     if !(*done || *trunc) {
+        //         let score = scores_buf[i];
+        //         rewards[i] += score - self.envs[i].last_score;
+        //         self.envs[i].last_score = score;
 
-                // If reward model is very certain, mark as done
-                if score >= 0.95 && self.envs[i].counter >= 4 {
-                    *done = true;
-                    let obs = self.envs[i].reset();
-                    obs_vec[i] = obs;
-                }
-            }
-        }
+        //         // If reward model is very certain, mark as done
+        //         if score >= 0.95 && self.envs[i].counter >= 4 {
+        //             *done = true;
+        //             let obs = self.envs[i].reset();
+        //             obs_vec[i] = obs;
+        //         }
+        //     }
+        // }
 
         // Compute last scores of reset environments
-        let mut reward_inpts = Vec::with_capacity(self.num_envs);
-        for i in 0..self.num_envs {
-            let reward_inpt = self.envs[i].reward_input(None);
-            reward_inpts.push(reward_inpt);
-        }
-        let reward_inpts = Tensor::concatenate(&reward_inpts, 0);
+        // let mut reward_inpts = Vec::with_capacity(self.num_envs);
+        // for i in 0..self.num_envs {
+        //     let reward_inpt = self.envs[i].reward_input(None);
+        //     reward_inpts.push(reward_inpt);
+        // }
+        // let reward_inpts = Tensor::concatenate(&reward_inpts, 0);
 
-        let mut scores_buf: Vec<f32> = vec![0.0; self.num_envs];
-        let scores = self
-            .reward_model
-            .read()
-            .unwrap()
-            .forward_ts(&[reward_inpts])
-            .unwrap();
-        scores.copy_data(&mut scores_buf, self.num_envs);
+        // let mut scores_buf: Vec<f32> = vec![0.0; self.num_envs];
+        // let scores = self
+        //     .reward_model
+        //     .read()
+        //     .unwrap()
+        //     .forward_ts(&[reward_inpts])
+        //     .unwrap();
+        // scores.copy_data(&mut scores_buf, self.num_envs);
 
-        for (i, (&done, &trunc)) in dones.iter().zip(&truncs).enumerate() {
-            if done || trunc {
-                self.envs[i].last_score = scores_buf[i];
-            }
-        }
+        // for (i, (&done, &trunc)) in dones.iter().zip(&truncs).enumerate() {
+        //     if done || trunc {
+        //         self.envs[i].last_score = scores_buf[i];
+        //     }
+        // }
 
         (obs_vec, rewards, dones, truncs)
     }

@@ -39,21 +39,21 @@ from paint_rl.experiments.supervised_strokes.train_supervised_all import (
 _: Any
 
 # Hyperparameters
-num_envs = 64  # Number of environments to step through at once during sampling.
+num_envs = 128  # Number of environments to step through at once during sampling.
 train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
 train_batch_size = 1024  # Minibatch size while training models.
-discount = 0.95  # Discount factor applied to rewards.
-lambda_ = 0.99  # Lambda for GAE.
-epsilon = 0.2  # Epsilon for importance sample clipping.
+discount = 0.8  # Discount factor applied to rewards.
+lambda_ = 0.95  # Lambda for GAE.
+epsilon = 0.1  # Epsilon for importance sample clipping.
 max_eval_steps = 300  # Number of eval runs to average over.
 eval_steps = 4  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
 p_lr = 0.00003  # Learning rate of the policy net.
 d_lr = 0.0003  # Learning rate of the discriminator.
 gen_steps = 2  # Number of generator steps per iteration.
-disc_steps = 1  # Number of discriminator steps per iteration.
+disc_steps = 2  # Number of discriminator steps per iteration.
 disc_ds_size = 512  # Size of the discriminator dataset. Half will be generated.
 disc_batch_size = 64  # Batch size for the discriminator.
 stroke_width = 4
@@ -169,7 +169,6 @@ class Discriminator(nn.Module):
         nn.Module.__init__(self)
         self.net = nn.Sequential(
             spectral_norm(nn.Conv2d(4, 32, 3, 2, padding=1)),
-            nn.BatchNorm2d(32),
             nn.LeakyReLU(0.2),
             spectral_norm(nn.Conv2d(32, 64, 3, 2, padding=1)),
             nn.BatchNorm2d(64),
@@ -281,9 +280,19 @@ if args.eval:
                 obs_, reward, eval_done, eval_trunc, _ = test_env.step(
                     (actions_cont, actions_discs[2])
                 )
-                test_env.render()
-                plt.imshow(action_probs_discs[1].exp().reshape(32, 32))
+                mid_layer = action_probs_discs[0].exp().reshape(32, 32)
+                end_layer = action_probs_discs[1].exp().reshape(32, 32)
+                img = (
+                    np.delete(
+                        np.delete(eval_obs[-3:], list(range(0, 64, 2)), axis=1),
+                        list(range(0, 64, 2)),
+                        axis=2,
+                    )
+                    / 2.0
+                ) + np.stack([mid_layer, end_layer, np.zeros([32, 32])])
+                plt.imshow(img.permute(1, 2, 0))
                 plt.show()
+                test_env.render()
                 eval_obs = torch.Tensor(obs_)
                 steps_taken += 1
                 if eval_done or eval_trunc:
@@ -474,7 +483,9 @@ for step in tqdm(range(iterations), position=0):
     ds_x_real = torch.from_numpy(
         np.concatenate([ds_refs, ground_truth], 1)
     ).float()  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
-    ds_y_real_batch = torch.from_numpy(np.ones([disc_batch_size]) * 0.9).float().to(device)
+    ds_y_real_batch = (
+        torch.from_numpy(np.ones([disc_batch_size]) * 0.9).float().to(device)
+    )
     ds_x_generated = torch.from_numpy(
         generated
     ).float()  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
@@ -600,7 +611,7 @@ for step in tqdm(range(iterations), position=0):
             discount,
             lambda_,
             epsilon,
-            entropy_coeff=entropy_coeff,
+            entropy_coeff=0.1 if step < 10 else entropy_coeff,
         )
         total_p_loss += step_p_loss
         total_v_loss += step_v_loss
@@ -618,18 +629,16 @@ for step in tqdm(range(iterations), position=0):
             for _ in range(max_eval_steps):
                 action_probs_discs = list(p_net(eval_obs.unsqueeze(0)))
                 actions_distrs = [
-                    Categorical(probs=action_probs_disc.exp().squeeze()) for action_probs_disc in action_probs_discs
+                    Categorical(probs=action_probs_disc.exp().squeeze())
+                    for action_probs_disc in action_probs_discs
                 ]
                 actions_discs = [
-                    (
-                        action_distr
-                        .sample()
-                        .unsqueeze(-1)
-                        .numpy()
-                    )
+                    (action_distr.sample().unsqueeze(-1).numpy())
                     for action_distr in actions_distrs
                 ]
-                entropy_total += sum([distr.entropy().mean() for distr in actions_distrs])
+                entropy_total += sum(
+                    [distr.entropy().mean() for distr in actions_distrs]
+                )
 
                 actions_cont = disc_actions_to_cont_actions(
                     actions_discs[0][np.newaxis, ...],
@@ -655,7 +664,7 @@ for step in tqdm(range(iterations), position=0):
             "avg_p_loss": total_p_loss / (train_iters * gen_steps),
             "avg_disc_loss_real": avg_disc_loss_real,
             "avg_disc_loss_generated": avg_disc_loss_generated,
-            "avg_eval_entropy": entropy_total / eval_steps
+            "avg_eval_entropy": entropy_total / eval_steps,
         }
     )
 
