@@ -25,6 +25,7 @@ fn benchmark(c: &mut Criterion) {
                     50,
                     32,
                     4,
+                    256,
                     Some(100),
                 )
             }

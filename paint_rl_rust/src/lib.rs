@@ -6,6 +6,7 @@ use indicatif::{ProgressBar, ProgressIterator};
 use ndarray::Dim;
 use numpy::{IntoPyArray, PyArray};
 use pyo3::prelude::*;
+use pyo3_tch::PyTensor;
 use rand::{seq::SliceRandom, Rng};
 use tch::Tensor;
 use weighted_rand::builder::{NewBuilder, WalkerTableBuilder};
@@ -20,6 +21,7 @@ pub struct TrainingContext {
     reward_model_path: String,
     p_net_path: String,
     num_workers: usize,
+    num_steps: usize,
 }
 
 #[pymethods]
@@ -34,6 +36,7 @@ impl TrainingContext {
         max_strokes: u32,
         num_envs: u32,
         num_workers: usize,
+        num_steps: usize,
         max_refs: Option<u64>,
     ) -> Self {
         // Load all images
@@ -68,18 +71,31 @@ impl TrainingContext {
 
         // Set up workers
         let reward_model = Arc::new(RwLock::new(tch::CModule::load(reward_model_path).unwrap()));
-        let w_ctxs = (0..num_workers)
-            .map(|_| WorkerContext {
-                env: VecEnv::new(
-                    (0..(num_envs / num_workers as u32))
-                        .map(|_| {
-                            SimCanvasEnv::new(canvas_size, img_size, 4, &ref_imgs, max_strokes)
-                        })
-                        .collect(),
-                    &reward_model,
+        let envs_per_worker = num_envs / num_workers as u32;
+        let mut w_ctxs = Vec::new();
+        for _ in 0..num_workers {
+            let mut env = VecEnv::new(
+                (0..(envs_per_worker))
+                    .map(|_| SimCanvasEnv::new(canvas_size, img_size, 4, &ref_imgs, max_strokes))
+                    .collect(),
+                &reward_model,
+            );
+
+            let w_ctx = WorkerContext {
+                normalize: NormalizeReward::new(envs_per_worker),
+                last_obs: Tensor::stack(&env.reset(), 0),
+                env,
+                rollout_buffer: RolloutBuffer::new(
+                    &[7, 32, 32],
+                    &[&[1], &[1], &[1]],
+                    &[&[32 * 32], &[32 * 32], &[2]],
+                    tch::Kind::Int,
+                    num_envs as u32,
+                    num_steps as u32,
                 ),
-            })
-            .collect();
+            };
+            w_ctxs.push(w_ctx);
+        }
 
         Self {
             ref_imgs,
@@ -87,6 +103,7 @@ impl TrainingContext {
             reward_model_path: reward_model_path.into(),
             num_workers,
             w_ctxs,
+            num_steps,
         }
     }
 
@@ -96,7 +113,6 @@ impl TrainingContext {
         py: Python<'_>,
         num_imgs: usize,
     ) -> Py<PyArray<f32, Dim<[usize; 4]>>> {
-        let options = (tch::Kind::Float, tch::Device::Cpu);
         let _guard = tch::no_grad_guard();
 
         let p_net = Arc::new(RwLock::new(tch::CModule::load(&self.p_net_path).unwrap()));
@@ -119,40 +135,17 @@ impl TrainingContext {
                 let mut img_arr_thread: Vec<ndarray::Array3<f32>> = Vec::with_capacity(num_imgs);
                 let obs_select = Tensor::from_slice(&[4, 5, 6, 2]);
                 while img_arr_thread.len() < num_imgs / num_workers {
-                    // Choose player action
-                    let tch::IValue::Tuple(results) = p_net.read().unwrap()
-                    .forward_is(&[tch::IValue::Tensor(obs.copy())])
-                    .unwrap() else {panic!("Invalid output.")};
-                    let tch::IValue::Tensor(action_probs_mid) = &results[0] else {panic!("Invalid output.")};
-                    let tch::IValue::Tensor(action_probs_end) = &results[1] else {panic!("Invalid output.")};
-                    let tch::IValue::Tensor(action_probs_down) = &results[2] else {panic!("Invalid output.")};
-                    let action_mid = sample(action_probs_mid);
-                    let action_end = sample(action_probs_end);
-                    let action_disc = sample(action_probs_down);
+                    // Choose action
+                    let (action_mid, action_end, action_down) =
+                        sample_model(&p_net.read().unwrap(), &obs);
 
                     // Compute stroke action
-                    let mut actions_cont = Vec::new();
-                    let quant_size = 32; // TODO: Pass this in as an argument
-                    for (&mid_index, end_index) in action_mid.iter().zip(action_end) {
-                        let mid_y = mid_index / quant_size;
-                        let mid_x = mid_index - mid_y * quant_size;
-                        let end_y = end_index / quant_size;
-                        let end_x = end_index - end_y * quant_size;
-                        let action_cont = Tensor::from_slice(&[
-                            mid_x as f64,
-                            mid_y as f64,
-                            end_x as f64,
-                            end_y as f64,
-                        ]) / quant_size as f64;
-                        actions_cont.push(action_cont);
-                    }
-                    let actions_cont = Tensor::stack(&actions_cont, 0);
+                    let actions_cont = discs_to_strokes(&action_mid, &action_end);
 
-                    let (obs_, _, done, mut trunc) = w_ctx.env.step(&actions_cont, &action_disc);
-
+                    let (obs_, _, done, mut trunc) = w_ctx.env.step(&actions_cont, &action_down);
 
                     // If any images have finished, add them to our array
-                    for (i, (&done, mut trunc)) in done.iter().zip(&mut trunc).enumerate() {
+                    for (i, (&done, trunc)) in done.iter().zip(&mut trunc).enumerate() {
                         if done || *trunc {
                             let data_item: ndarray::ArrayD<f32> = obs
                                 .get(i as i64)
@@ -191,11 +184,156 @@ impl TrainingContext {
         .into_pyarray(py)
         .to_owned()
     }
+
+    /// Performs one iteration of the rollout process.
+    /// Returns buffer tensors and entropy.
+    pub fn rollout(
+        &mut self,
+    ) -> (
+        PyTensor,
+        Vec<PyTensor>,
+        Vec<PyTensor>,
+        PyTensor,
+        PyTensor,
+        PyTensor,
+    ) {
+        let _guard = tch::no_grad_guard();
+        let p_net = Arc::new(tch::CModule::load(&self.p_net_path).expect("Couldn't load module."));
+
+        let num_steps = self.num_steps;
+        let mut handles = Vec::new();
+        for mut w_ctx in self.w_ctxs.drain(0..self.w_ctxs.len()) {
+            let p_net = p_net.clone();
+            let handle = std::thread::spawn(move || {
+                let _guard = tch::no_grad_guard();
+                let mut obs = w_ctx.last_obs.copy();
+                for _ in 0..num_steps {
+                    // Choose action
+                    let (action_mid_probs, action_end_probs, action_down_probs) =
+                        get_act_probs(&p_net, &obs);
+                    let action_mid = sample(&action_mid_probs);
+                    let action_end = sample(&action_end_probs);
+                    let action_down = sample(&action_down_probs);
+                    let actions_cont = discs_to_strokes(&action_mid, &action_end);
+                    let actions = [&action_mid, &action_end, &action_down];
+                    let action_probs = [&action_mid_probs, &action_end_probs, &action_down_probs];
+
+                    let (obs_, rewards, dones, truncs) =
+                        w_ctx.env.step(&actions_cont, &action_down);
+                    obs = Tensor::stack(&obs_, 0);
+                    let rewards = w_ctx
+                        .normalize
+                        .processes_rews(&Tensor::from_slice(&rewards), &Tensor::from_slice(&dones));
+                    w_ctx.rollout_buffer.insert_step(
+                        &obs,
+                        &actions
+                            .iter()
+                            .map(|action| {
+                                Tensor::from_slice(
+                                    &action.iter().copied().map(i64::from).collect::<Vec<_>>(),
+                                )
+                                .unsqueeze(1)
+                            })
+                            .collect::<Vec<_>>(),
+                        &action_probs,
+                        &rewards,
+                        &dones,
+                        &truncs,
+                    );
+                }
+
+                w_ctx.rollout_buffer.insert_final_step(&obs);
+                w_ctx.last_obs = obs;
+
+                w_ctx
+            });
+            handles.push(handle);
+        }
+
+        // Process data once finished
+        for handle in handles {
+            let w_ctx = handle.join().unwrap();
+            self.w_ctxs.push(w_ctx);
+        }
+
+        // Copy the contents of each rollout buffer
+        let state_buffer = Tensor::concatenate(
+            &self
+                .w_ctxs
+                .iter()
+                .map(|w_ctx| &w_ctx.rollout_buffer.states)
+                .collect::<Vec<&Tensor>>(),
+            1,
+        );
+        let act_buffer = (0..3)
+            .map(|i| {
+                PyTensor(Tensor::concatenate(
+                    &self
+                        .w_ctxs
+                        .iter()
+                        .map(|w_ctx| &w_ctx.rollout_buffer.actions[i])
+                        .collect::<Vec<&Tensor>>(),
+                    1,
+                ))
+            })
+            .collect();
+        let act_probs_buffer = (0..3)
+            .map(|i| {
+                PyTensor(Tensor::concatenate(
+                    &self
+                        .w_ctxs
+                        .iter()
+                        .map(|w_ctx| &w_ctx.rollout_buffer.action_probs[i])
+                        .collect::<Vec<&Tensor>>(),
+                    1,
+                ))
+            })
+            .collect();
+        let reward_buffer = Tensor::concatenate(
+            &self
+                .w_ctxs
+                .iter()
+                .map(|w_ctx| &w_ctx.rollout_buffer.rewards)
+                .collect::<Vec<&Tensor>>(),
+            1,
+        );
+        let done_buffer = Tensor::concatenate(
+            &self
+                .w_ctxs
+                .iter()
+                .map(|w_ctx| &w_ctx.rollout_buffer.dones)
+                .collect::<Vec<&Tensor>>(),
+            1,
+        );
+        let trunc_buffer = Tensor::concatenate(
+            &self
+                .w_ctxs
+                .iter()
+                .map(|w_ctx| &w_ctx.rollout_buffer.truncs)
+                .collect::<Vec<&Tensor>>(),
+            1,
+        );
+        for w_ctx in self.w_ctxs.iter_mut() {
+            w_ctx.rollout_buffer.next = 0;
+        }
+
+        (
+            PyTensor(state_buffer),
+            act_buffer,
+            act_probs_buffer,
+            PyTensor(reward_buffer),
+            PyTensor(done_buffer),
+            PyTensor(trunc_buffer),
+        )
+    }
 }
 
 /// State of each worker.
 pub struct WorkerContext {
     pub env: VecEnv,
+    pub normalize: NormalizeReward,
+    pub last_obs: Tensor,
+    pub rollout_buffer: RolloutBuffer,
 }
 
 /// Returns a list of actions given the probabilities.
@@ -216,6 +354,47 @@ fn sample(log_probs: &Tensor) -> Vec<u32> {
     }
 
     generated_samples
+}
+
+/// Returns action probabilities from a model.
+fn get_act_probs(p_net: &tch::CModule, obs: &Tensor) -> (Tensor, Tensor, Tensor) {
+    let tch::IValue::Tuple(results) = p_net
+    .forward_is(&[tch::IValue::Tensor(obs.copy())])
+    .unwrap() else {panic!("Invalid output.")};
+    let tch::IValue::Tensor(action_probs_mid) = &results[0] else {panic!("Invalid output.")};
+    let tch::IValue::Tensor(action_probs_end) = &results[1] else {panic!("Invalid output.")};
+    let tch::IValue::Tensor(action_probs_down) = &results[2] else {panic!("Invalid output.")};
+    (
+        action_probs_mid.copy(),
+        action_probs_end.copy(),
+        action_probs_down.copy(),
+    )
+}
+
+/// Samples actions from a model.
+fn sample_model(p_net: &tch::CModule, obs: &Tensor) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+    let (action_probs_mid, action_probs_end, action_probs_down) = get_act_probs(p_net, obs);
+    let action_mid = sample(&action_probs_mid);
+    let action_end = sample(&action_probs_end);
+    let action_down = sample(&action_probs_down);
+    (action_mid, action_end, action_down)
+}
+
+/// Converts discrete actions to strokes.
+fn discs_to_strokes(action_mid: &[u32], action_end: &[u32]) -> Tensor {
+    let mut actions_cont = Vec::new();
+    let quant_size = 32; // TODO: Pass this in as an argument
+    for (&mid_index, end_index) in action_mid.iter().zip(action_end) {
+        let mid_y = mid_index / quant_size;
+        let mid_x = mid_index - mid_y * quant_size;
+        let end_y = end_index / quant_size;
+        let end_x = end_index - end_y * quant_size;
+        let action_cont =
+            Tensor::from_slice(&[mid_x as f64, mid_y as f64, end_x as f64, end_y as f64])
+                / quant_size as f64;
+        actions_cont.push(action_cont);
+    }
+    Tensor::stack(&actions_cont, 0)
 }
 
 /// Wrapper for environments for vectorization.
@@ -334,4 +513,192 @@ impl VecEnv {
 fn paint_rl_rust(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<TrainingContext>().unwrap();
     Ok(())
+}
+
+struct RunningMeanStd {
+    pub mean: Tensor,
+    pub var: Tensor,
+    pub count: f32,
+}
+
+impl RunningMeanStd {
+    fn new() -> Self {
+        let mean = Tensor::zeros([], (tch::Kind::Float, tch::Device::Cpu));
+        let var = Tensor::ones([], (tch::Kind::Float, tch::Device::Cpu));
+        let count = 0.0001;
+        Self { mean, var, count }
+    }
+
+    fn update(&mut self, x: &Tensor) {
+        let batch_mean = Tensor::mean(x, tch::Kind::Float);
+        let batch_var = x.var(true);
+        let batch_count = x.size()[0];
+        self.update_from_moments(batch_mean, batch_var, batch_count);
+    }
+
+    fn update_from_moments(&mut self, batch_mean: Tensor, batch_var: Tensor, batch_count: i64) {
+        (self.mean, self.var, self.count) = update_mean_var_count_from_moments(
+            &self.mean,
+            &self.var,
+            self.count,
+            batch_mean,
+            batch_var,
+            batch_count,
+        );
+    }
+}
+
+fn update_mean_var_count_from_moments(
+    mean: &Tensor,
+    var: &Tensor,
+    count: f32,
+    batch_mean: Tensor,
+    batch_var: Tensor,
+    batch_count: i64,
+) -> (Tensor, Tensor, f32) {
+    let delta = &batch_mean.subtract(mean);
+    let tot_count = count + batch_count as f32;
+
+    let new_mean = mean + &delta.multiply_scalar(batch_count as f64 / tot_count as f64);
+    let m_a = count * var;
+    let m_b = batch_var * batch_count;
+    let m2 = m_a + m_b + count * (batch_count as f32) / tot_count * delta.square();
+    let new_var = m2.divide_scalar(tot_count as f64);
+    let new_count = tot_count;
+
+    (new_mean, new_var, new_count)
+}
+
+pub struct NormalizeReward {
+    return_rms: RunningMeanStd,
+    returns: Tensor,
+    gamma: f32,
+    epsilon: f32,
+}
+impl NormalizeReward {
+    fn new(num_envs: u32) -> Self {
+        let return_rms = RunningMeanStd::new();
+        let returns = Tensor::zeros([num_envs as i64], (tch::Kind::Float, tch::Device::Cpu));
+        let gamma = 0.99;
+        let epsilon = 0.0000001;
+        Self {
+            return_rms,
+            returns,
+            gamma,
+            epsilon,
+        }
+    }
+
+    fn processes_rews(&mut self, rews: &Tensor, dones: &Tensor) -> Tensor {
+        self.returns = (self.gamma * (1 - dones.to_kind(tch::Kind::Float))) * &self.returns + rews;
+        self.normalize(rews)
+    }
+
+    fn normalize(&mut self, rews: &Tensor) -> Tensor {
+        self.return_rms.update(&self.returns);
+        rews / Tensor::sqrt(&(self.epsilon + &self.return_rms.var))
+    }
+}
+
+pub type Size<'a> = &'a [i64];
+
+/// A pared down rollout buffer for collecting transitions.
+/// The data should be sent to Python for actual training.
+pub struct RolloutBuffer {
+    num_envs: u32,
+    num_steps: u32,
+    next: i64,
+    states: Tensor,
+    actions: Vec<Tensor>,
+    action_probs: Vec<Tensor>,
+    rewards: Tensor,
+    dones: Tensor,
+    truncs: Tensor,
+}
+
+impl RolloutBuffer {
+    pub fn new(
+        state_shape: Size,
+        action_shapes: &[Size],
+        action_probs_shapes: &[Size],
+        action_dtype: tch::Kind,
+        num_envs: u32,
+        num_steps: u32,
+    ) -> Self {
+        let k = tch::Kind::Float;
+        let d = tch::Device::Cpu;
+        let options = (k, d);
+        let state_shape = [&[num_steps as i64 + 1, num_envs as i64], state_shape].concat();
+        let action_shapes: Vec<_> = action_shapes
+            .iter()
+            .map(|action_shape| [&[num_steps as i64, num_envs as i64], *action_shape].concat())
+            .collect();
+        let action_probs_shapes: Vec<_> = action_probs_shapes
+            .iter()
+            .map(|action_probs_shape| {
+                [&[num_steps as i64, num_envs as i64], *action_probs_shape].concat()
+            })
+            .collect();
+        let next = 0;
+        let states = Tensor::zeros(state_shape, options).set_requires_grad(false);
+        let actions = action_shapes
+            .iter()
+            .map(|action_shape| {
+                Tensor::zeros(action_shape, (action_dtype, d)).set_requires_grad(false)
+            })
+            .collect();
+        let action_probs = action_probs_shapes
+            .iter()
+            .map(|action_probs_shape| {
+                Tensor::zeros(action_probs_shape, options).set_requires_grad(false)
+            })
+            .collect();
+        let rewards =
+            Tensor::zeros([num_steps as i64, num_envs as i64], options).set_requires_grad(false);
+        let dones =
+            Tensor::zeros([num_steps as i64, num_envs as i64], options).set_requires_grad(false);
+        let truncs =
+            Tensor::zeros([num_steps as i64, num_envs as i64], options).set_requires_grad(false);
+        Self {
+            num_envs,
+            num_steps,
+            next,
+            states,
+            actions,
+            action_probs,
+            rewards,
+            dones,
+            truncs,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_step(
+        &mut self,
+        states: &Tensor,
+        actions: &[Tensor],
+        action_probs: &[&Tensor],
+        rewards: &Tensor,
+        dones: &[bool],
+        truncs: &[bool],
+    ) {
+        let _guard = tch::no_grad_guard();
+        self.states.get(self.next).copy_(states);
+        for i in 0..self.actions.len() {
+            self.actions[i].get(self.next).copy_(&actions[i]);
+            self.action_probs[i].get(self.next).copy_(action_probs[i]);
+        }
+        self.rewards.get(self.next).copy_(&rewards);
+        self.dones.get(self.next).copy_(&Tensor::from_slice(dones));
+        self.truncs
+            .get(self.next)
+            .copy_(&Tensor::from_slice(truncs));
+
+        self.next += 1;
+    }
+
+    pub fn insert_final_step(&mut self, state: &Tensor) {
+        let _guard = tch::no_grad_guard();
+        self.states.get(self.next).copy_(state);
+    }
 }

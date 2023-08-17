@@ -39,7 +39,7 @@ from paint_rl.experiments.supervised_strokes.train_supervised_all import (
 _: Any
 
 # Hyperparameters
-num_envs = 128  # Number of environments to step through at once during sampling.
+num_envs = 64  # Number of environments to step through at once during sampling.
 train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
@@ -52,7 +52,7 @@ eval_steps = 4  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
 p_lr = 0.00003  # Learning rate of the policy net.
 d_lr = 0.0003  # Learning rate of the discriminator.
-gen_steps = 2  # Number of generator steps per iteration.
+gen_steps = 1  # Number of generator steps per iteration.
 disc_steps = 2  # Number of discriminator steps per iteration.
 disc_ds_size = 512  # Size of the discriminator dataset. Half will be generated.
 disc_batch_size = 64  # Batch size for the discriminator.
@@ -484,7 +484,7 @@ for step in tqdm(range(iterations), position=0):
         np.concatenate([ds_refs, ground_truth], 1)
     ).float()  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
     ds_y_real_batch = (
-        torch.from_numpy(np.ones([disc_batch_size]) * 0.9).float().to(device)
+        torch.from_numpy(np.ones([disc_batch_size])).float().to(device)
     )
     ds_x_generated = torch.from_numpy(
         generated
