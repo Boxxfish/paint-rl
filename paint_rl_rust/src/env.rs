@@ -77,6 +77,18 @@ impl SimCanvasEnv {
             cont_action.double_value(&[2]) as u32,
             cont_action.double_value(&[3]) as u32,
         );
+
+        let mut reward = 0.0;
+
+        // Penalize not drawing far enough
+        let last_pos = self.sim_canvas.last_brush_pos();
+        if (((last_pos.0 - end_point.0).pow(2) + (last_pos.1 - end_point.1).pow(2)) as f32).sqrt()
+            <= 4.0
+        {
+            reward += -0.2;
+        }
+
+        // Draw on canvas
         let pen_down = disc_action == 1;
         if pen_down {
             self.sim_canvas
@@ -88,11 +100,9 @@ impl SimCanvasEnv {
         self.counter += 1;
         let trunc = self.counter == self.max_strokes;
 
-        let mut reward = 0.0;
-
         // Penalize refusing to put down strokes
         if !self.last_pen_down && !pen_down {
-            reward = -1.0;
+            reward = -0.2;
         }
         self.last_pen_down = pen_down;
 

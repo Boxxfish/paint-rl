@@ -10,6 +10,9 @@ from torch import nn
 
 
 class MergeableBuffer(Protocol):
+    actions: torch.Tensor
+    action_probs: torch.Tensor
+
     def get_actions(self) -> torch.Tensor:
         ...
 

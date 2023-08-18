@@ -39,27 +39,28 @@ from paint_rl.experiments.supervised_strokes.train_supervised_all import (
 _: Any
 
 # Hyperparameters
-num_envs = 64  # Number of environments to step through at once during sampling.
+num_envs = 128  # Number of environments to step through at once during sampling.
 train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
 train_batch_size = 1024  # Minibatch size while training models.
-discount = 0.8  # Discount factor applied to rewards.
+discount = 0.95  # Discount factor applied to rewards.
 lambda_ = 0.95  # Lambda for GAE.
-epsilon = 0.1  # Epsilon for importance sample clipping.
+epsilon = 0.2  # Epsilon for importance sample clipping.
 max_eval_steps = 300  # Number of eval runs to average over.
 eval_steps = 4  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
-p_lr = 0.00003  # Learning rate of the policy net.
+p_lr = 0.0001  # Learning rate of the policy net.
 d_lr = 0.0003  # Learning rate of the discriminator.
 gen_steps = 1  # Number of generator steps per iteration.
-disc_steps = 2  # Number of discriminator steps per iteration.
-disc_ds_size = 512  # Size of the discriminator dataset. Half will be generated.
+disc_steps = 1  # Number of discriminator steps per iteration.
+disc_ds_size = 1024  # Size of the discriminator dataset. Half will be generated.
 disc_batch_size = 64  # Batch size for the discriminator.
 stroke_width = 4
 canvas_size = 256
 quant_size = 32
 entropy_coeff = 0.001
+num_workers = 8
 device = torch.device("cuda")  # Device to use during training.
 
 # Argument parsing
@@ -290,8 +291,8 @@ if args.eval:
                     )
                     / 2.0
                 ) + np.stack([mid_layer, end_layer, np.zeros([32, 32])])
-                plt.imshow(img.permute(1, 2, 0))
-                plt.show()
+                # plt.imshow(img.permute(1, 2, 0))
+                # plt.show()
                 test_env.render()
                 eval_obs = torch.Tensor(obs_)
                 steps_taken += 1
@@ -410,9 +411,10 @@ training_context = TrainingContext(
     "temp/all_outputs",
     p_net_path,
     d_net_path,
-    64,
     max_strokes,
-    8,
+    num_envs,
+    num_workers,
+    train_steps,
 )
 d_net.to(device)
 
@@ -451,8 +453,6 @@ assert isinstance(buffers[0], RolloutBuffer)
 assert isinstance(buffers[1], ActionRolloutBuffer)
 assert isinstance(buffers[2], ActionRolloutBuffer)
 
-obs = torch.Tensor(env.reset()[0])
-done = False
 for step in tqdm(range(iterations), position=0):
     # Export models
     traced = torch.jit.trace(
@@ -461,95 +461,118 @@ for step in tqdm(range(iterations), position=0):
     )
     traced.save(p_net_path)
 
+    warmup_steps = 5
+    avg_disc_loss_real = 0.0
+    avg_disc_loss_generated = 0.0
+    if step >= warmup_steps:
+        generated = training_context.gen_imgs(
+            disc_ds_size // 2
+        )  # Shape: (disc_ds_size / 2, 4 img_size, img_size)
+
+        # Training the discriminator
+        ds_indices = np.random.permutation(len(ref_imgs))[: disc_ds_size // 2].tolist()
+        ds_refs = np.stack(
+            [ref_imgs[i] for i in ds_indices]
+        )  # Shape: (disc_ds_size, 3, img_size, img_size)
+        ground_truth = np.expand_dims(
+            np.stack([stroke_imgs[i] for i in ds_indices]), 1
+        )  # Shape: (disc_ds_size / 2, 1 img_size, img_size)
+        ds_x_real = torch.from_numpy(
+            np.concatenate([ds_refs, ground_truth], 1)
+        ).float()  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
+        ds_y_real_batch = torch.from_numpy(np.ones([disc_batch_size])).float().to(device)
+        ds_x_generated = torch.from_numpy(
+            generated
+        ).float()  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
+        ds_y_generated_batch = torch.zeros(
+            [disc_batch_size], dtype=torch.float, device=device
+        )
+        del ds_refs, ground_truth, generated
+        noise = torch.concatenate(
+            [
+                torch.zeros([disc_ds_size // 2, 3, img_size, img_size]),
+                torch.distributions.Normal(0.0, 0.1).sample(
+                    [disc_ds_size // 2, 1, img_size, img_size]
+                ),
+            ],
+            1,
+        )
+        ds_x_real = torch.clip(ds_x_real + noise, 0.0, 1.0)
+        ds_x_generated = torch.clip(ds_x_generated + noise, 0.0, 1.0)
+        d_crit = nn.BCELoss()
+        num_batches = disc_ds_size // (2 * disc_batch_size)
+        d_net.train()
+
+        for _ in tqdm(range(disc_steps), position=1):
+            epoch_indices = torch.from_numpy(np.random.permutation(disc_ds_size // 2))
+
+            # Train on generated
+            ds_x_generated = ds_x_generated[epoch_indices]
+            for i in range(num_batches):
+                batch_x = ds_x_generated[
+                    i * disc_batch_size : (i + 1) * disc_batch_size
+                ].to(device)
+                batch_y = ds_y_generated_batch
+                d_opt.zero_grad()
+                pred_y = d_net(batch_x).squeeze(1)
+                loss = d_crit(pred_y, batch_y)
+                avg_disc_loss_generated += loss.item()
+                loss.backward()
+                d_opt.step()
+
+            # Train on real
+            ds_x_real = ds_x_real[epoch_indices]
+            for i in range(num_batches):
+                batch_x = ds_x_real[i * disc_batch_size : (i + 1) * disc_batch_size].to(
+                    device
+                )
+                batch_y = ds_y_real_batch
+                d_opt.zero_grad()
+                pred_y = d_net(batch_x).squeeze(1)
+                loss = d_crit(pred_y, batch_y)
+                avg_disc_loss_real += loss.item()
+                loss.backward()
+                d_opt.step()
+
+            with torch.no_grad():
+                for i in range(4):
+                    img_layers = ds_x_generated[i].cpu()
+                    ref = img_layers[:3].permute(1, 2, 0)
+                    canvas = img_layers[3]
+                    final_img = (
+                        (((ref / 2 + 0.5) * (1.0 - canvas.unsqueeze(2))) * 255.0)
+                        .numpy()
+                        .astype(np.uint8)
+                    )
+                    Image.fromarray(final_img).save(
+                        f"temp/training/generated/{step}_{i}.png"
+                    )
+
+            # with torch.no_grad():
+            #     for i in range(5):
+            #         pred = d_net(ds_x_real[i].unsqueeze(0).to(device)).squeeze(0).item()
+            #         print("Prediction: ", pred)
+            #         plt.imshow(ds_x_real[i][3].cpu())
+            #         plt.show()
+            #         plt.imshow(ds_x_real[i][:3].mean(0).cpu())
+            #         plt.show()
+            #         pred = d_net(ds_x_generated[i].unsqueeze(0).to(device)).squeeze(0).item()
+            #         print("Prediction: ", pred)
+            #         plt.imshow(ds_x_generated[i][3].cpu())
+            #         plt.show()
+            #         plt.imshow(ds_x_generated[i][:3].mean(0).cpu())
+            #         plt.show()
+        avg_disc_loss_real /= disc_steps * num_batches
+        avg_disc_loss_generated /= disc_steps * num_batches
+        d_net.eval()
+
     d_net.cpu()
     traced = torch.jit.trace(
         d_net,
         (sample_input_d,),
     )
     traced.save(d_net_path)
-    generated = training_context.gen_imgs(
-        disc_ds_size // 2
-    )  # Shape: (disc_ds_size / 2, 4 img_size, img_size)
     d_net.to(device)
-
-    # Training the discriminator
-    ds_indices = np.random.permutation(len(ref_imgs))[: disc_ds_size // 2].tolist()
-    ds_refs = np.stack(
-        [ref_imgs[i] for i in ds_indices]
-    )  # Shape: (disc_ds_size, 3, img_size, img_size)
-    ground_truth = np.expand_dims(
-        np.stack([stroke_imgs[i] for i in ds_indices]), 1
-    )  # Shape: (disc_ds_size / 2, 1 img_size, img_size)
-    ds_x_real = torch.from_numpy(
-        np.concatenate([ds_refs, ground_truth], 1)
-    ).float()  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
-    ds_y_real_batch = (
-        torch.from_numpy(np.ones([disc_batch_size])).float().to(device)
-    )
-    ds_x_generated = torch.from_numpy(
-        generated
-    ).float()  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
-    ds_y_generated_batch = torch.zeros(
-        [disc_batch_size], dtype=torch.float, device=device
-    )
-    del ds_refs, ground_truth, generated
-    noise = torch.distributions.Normal(0.0, 0.1).sample(ds_x_real.shape)
-    ds_x_real = torch.clip(ds_x_real + noise, 0.0, 1.0)
-    ds_x_generated = torch.clip(ds_x_generated + noise, 0.0, 1.0)
-    d_crit = nn.BCELoss()
-    num_batches = disc_ds_size // (2 * disc_batch_size)
-    avg_disc_loss_real = 0.0
-    avg_disc_loss_generated = 0.0
-    d_net.train()
-
-    for _ in tqdm(range(disc_steps), position=1):
-        epoch_indices = torch.from_numpy(np.random.permutation(disc_ds_size // 2))
-
-        # Train on generated
-        ds_x_generated = ds_x_generated[epoch_indices]
-        for i in range(num_batches):
-            batch_x = ds_x_generated[
-                i * disc_batch_size : (i + 1) * disc_batch_size
-            ].to(device)
-            batch_y = ds_y_generated_batch
-            d_opt.zero_grad()
-            pred_y = d_net(batch_x).squeeze(1)
-            loss = d_crit(pred_y, batch_y)
-            avg_disc_loss_generated += loss.item()
-            loss.backward()
-            d_opt.step()
-
-        # Train on real
-        ds_x_real = ds_x_real[epoch_indices]
-        for i in range(num_batches):
-            batch_x = ds_x_real[i * disc_batch_size : (i + 1) * disc_batch_size].to(
-                device
-            )
-            batch_y = ds_y_real_batch
-            d_opt.zero_grad()
-            pred_y = d_net(batch_x).squeeze(1)
-            loss = d_crit(pred_y, batch_y)
-            avg_disc_loss_real += loss.item()
-            loss.backward()
-            d_opt.step()
-
-        # with torch.no_grad():
-        #     for i in range(5):
-        #         pred = d_net(ds_x_real[i].unsqueeze(0).to(device)).squeeze(0).item()
-        #         print("Prediction: ", pred)
-        #         plt.imshow(ds_x_real[i][3].cpu())
-        #         plt.show()
-        #         plt.imshow(ds_x_real[i][:3].mean(0).cpu())
-        #         plt.show()
-        #         pred = d_net(ds_x_generated[i].unsqueeze(0).to(device)).squeeze(0).item()
-        #         print("Prediction: ", pred)
-        #         plt.imshow(ds_x_generated[i][3].cpu())
-        #         plt.show()
-        #         plt.imshow(ds_x_generated[i][:3].mean(0).cpu())
-        #         plt.show()
-    avg_disc_loss_real /= disc_steps * num_batches
-    avg_disc_loss_generated /= disc_steps * num_batches
-    d_net.eval()
 
     # Training the generator
     total_p_loss = 0.0
@@ -557,46 +580,22 @@ for step in tqdm(range(iterations), position=0):
     for _ in tqdm(range(gen_steps), position=1):
         # Collect experience for a number of steps and store it in the buffer
         with torch.no_grad():
-            for _ in tqdm(range(train_steps), position=2):
-                action_probs_discs = list(p_net(obs))
-                actions_discs = [
-                    (
-                        Categorical(probs=action_probs_disc.exp())
-                        .sample()
-                        .unsqueeze(-1)
-                        .numpy()
-                    )
-                    for action_probs_disc in action_probs_discs
-                ]
-
-                actions_cont = disc_actions_to_cont_actions(
-                    actions_discs[0], actions_discs[1], quant_size
-                )
-
-                obs_, rewards, dones, truncs, _ = env.step(
-                    (actions_cont, actions_discs[2])
-                )
-                buffers[0].insert_step(
-                    obs,
-                    torch.from_numpy(actions_discs[0]),
-                    action_probs_discs[0],
-                    list(rewards),
-                    list(dones),
-                    list(truncs),
-                )
-                buffers[1].insert_step(
-                    torch.from_numpy(actions_discs[1]),
-                    action_probs_discs[1],
-                )
-                buffers[2].insert_step(
-                    torch.from_numpy(actions_discs[2]),
-                    action_probs_discs[2],
-                )
-                obs = torch.from_numpy(obs_)
-                if done:
-                    obs = torch.Tensor(env.reset()[0])
-                    done = False
-            buffers[0].insert_final_step(obs)
+            (
+                obs_buf,
+                act_bufs,
+                act_probs_bufs,
+                reward_buf,
+                done_buf,
+                trunc_buf,
+            ) = training_context.rollout()
+            buffers[0].states.copy_(obs_buf)
+            for i in range(3):
+                buffers[i].actions.copy_(act_bufs[i])
+                buffers[i].action_probs.copy_(act_probs_bufs[i])
+            buffers[0].rewards.copy_(reward_buf)
+            buffers[0].dones.copy_(done_buf)
+            buffers[0].truncs.copy_(trunc_buf)
+            del obs_buf, act_bufs, act_probs_bufs, reward_buf, done_buf, trunc_buf
 
         # Train
         step_p_loss, step_v_loss = train_ppo(
@@ -611,10 +610,13 @@ for step in tqdm(range(iterations), position=0):
             discount,
             lambda_,
             epsilon,
-            entropy_coeff=0.1 if step < 10 else entropy_coeff,
+            entropy_coeff=1.0 if step < warmup_steps else entropy_coeff,
         )
         total_p_loss += step_p_loss
         total_v_loss += step_v_loss
+        training_reward_mean = buffers[0].rewards.mean().item()
+        training_reward_max = buffers[0].rewards.max().item()
+        training_reward_min = buffers[0].rewards.min().item()
         for buffer in buffers:
             buffer.clear()
 
@@ -665,6 +667,9 @@ for step in tqdm(range(iterations), position=0):
             "avg_disc_loss_real": avg_disc_loss_real,
             "avg_disc_loss_generated": avg_disc_loss_generated,
             "avg_eval_entropy": entropy_total / eval_steps,
+            "avg_training_reward": training_reward_mean,
+            "max_training_reward": training_reward_max,
+            "min_training_reward": training_reward_min,
         }
     )
 

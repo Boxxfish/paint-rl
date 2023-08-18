@@ -22,6 +22,10 @@ pub struct TrainingContext {
     p_net_path: String,
     num_workers: usize,
     num_steps: usize,
+    num_envs: usize,
+    canvas_size: u32,
+    img_size: u32,
+    max_strokes: u32,
 }
 
 #[pymethods]
@@ -86,11 +90,11 @@ impl TrainingContext {
                 last_obs: Tensor::stack(&env.reset(), 0),
                 env,
                 rollout_buffer: RolloutBuffer::new(
-                    &[7, 32, 32],
+                    &[7, 64, 64],
                     &[&[1], &[1], &[1]],
                     &[&[32 * 32], &[32 * 32], &[2]],
                     tch::Kind::Int,
-                    num_envs as u32,
+                    envs_per_worker,
                     num_steps as u32,
                 ),
             };
@@ -104,6 +108,10 @@ impl TrainingContext {
             num_workers,
             w_ctxs,
             num_steps,
+            num_envs: num_envs as usize,
+            max_strokes,
+            canvas_size,
+            img_size,
         }
     }
 
@@ -120,18 +128,34 @@ impl TrainingContext {
         let reward_model = Arc::new(RwLock::new(
             tch::CModule::load(&self.reward_model_path).unwrap(),
         ));
-        for w_ctx in &mut self.w_ctxs {
-            w_ctx.env.reward_model = reward_model.clone();
-        }
+        let envs_per_worker = self.num_envs / self.num_workers;
+        let envs: Vec<_> = (0..self.num_workers)
+            .map(|_| {
+                VecEnv::new(
+                    (0..(envs_per_worker))
+                        .map(|_| {
+                            SimCanvasEnv::new(
+                                self.canvas_size,
+                                self.img_size,
+                                4,
+                                &self.ref_imgs,
+                                self.max_strokes,
+                            )
+                        })
+                        .collect(),
+                    &reward_model,
+                )
+            })
+            .collect();
         let mut handles = Vec::new();
         let bar = ProgressBar::new(num_imgs as u64);
-        for mut w_ctx in self.w_ctxs.drain(0..self.w_ctxs.len()) {
+        for mut env in envs {
             let p_net = p_net.clone();
             let num_workers = self.num_workers;
             let bar = bar.clone();
             let handle = std::thread::spawn(move || {
                 let _guard = tch::no_grad_guard();
-                let mut obs = Tensor::stack(&w_ctx.env.reset(), 0);
+                let mut obs = Tensor::stack(&env.reset(), 0);
                 let mut img_arr_thread: Vec<ndarray::Array3<f32>> = Vec::with_capacity(num_imgs);
                 let obs_select = Tensor::from_slice(&[4, 5, 6, 2]);
                 while img_arr_thread.len() < num_imgs / num_workers {
@@ -142,7 +166,7 @@ impl TrainingContext {
                     // Compute stroke action
                     let actions_cont = discs_to_strokes(&action_mid, &action_end);
 
-                    let (obs_, _, done, mut trunc) = w_ctx.env.step(&actions_cont, &action_down);
+                    let (obs_, _, done, mut trunc) = env.step(&actions_cont, &action_down);
 
                     // If any images have finished, add them to our array
                     for (i, (&done, trunc)) in done.iter().zip(&mut trunc).enumerate() {
@@ -162,15 +186,14 @@ impl TrainingContext {
                     }
                     obs = Tensor::stack(&obs_, 0);
                 }
-                (w_ctx, img_arr_thread)
+                img_arr_thread
             });
             handles.push(handle);
         }
 
         // Process data once finished
         for handle in handles {
-            let (w_ctx, mut img_arr_thread) = handle.join().unwrap();
-            self.w_ctxs.push(w_ctx);
+            let mut img_arr_thread = handle.join().unwrap();
             img_arr.append(&mut img_arr_thread);
         }
         bar.finish();
@@ -199,11 +222,17 @@ impl TrainingContext {
     ) {
         let _guard = tch::no_grad_guard();
         let p_net = Arc::new(tch::CModule::load(&self.p_net_path).expect("Couldn't load module."));
+        let reward_model = Arc::new(RwLock::new(
+            tch::CModule::load(&self.reward_model_path).unwrap(),
+        ));
 
         let num_steps = self.num_steps;
         let mut handles = Vec::new();
+        let bar = ProgressBar::new((self.num_workers * num_steps) as u64);
         for mut w_ctx in self.w_ctxs.drain(0..self.w_ctxs.len()) {
             let p_net = p_net.clone();
+            let bar = bar.clone();
+            w_ctx.env.reward_model = reward_model.clone();
             let handle = std::thread::spawn(move || {
                 let _guard = tch::no_grad_guard();
                 let mut obs = w_ctx.last_obs.copy();
@@ -216,14 +245,11 @@ impl TrainingContext {
                     let action_down = sample(&action_down_probs);
                     let actions_cont = discs_to_strokes(&action_mid, &action_end);
                     let actions = [&action_mid, &action_end, &action_down];
-                    let action_probs = [&action_mid_probs, &action_end_probs, &action_down_probs];
+                    let action_probs = [action_mid_probs, action_end_probs, action_down_probs];
 
                     let (obs_, rewards, dones, truncs) =
                         w_ctx.env.step(&actions_cont, &action_down);
                     obs = Tensor::stack(&obs_, 0);
-                    let rewards = w_ctx
-                        .normalize
-                        .processes_rews(&Tensor::from_slice(&rewards), &Tensor::from_slice(&dones));
                     w_ctx.rollout_buffer.insert_step(
                         &obs,
                         &actions
@@ -236,10 +262,13 @@ impl TrainingContext {
                             })
                             .collect::<Vec<_>>(),
                         &action_probs,
-                        &rewards,
+                        &Tensor::from_slice(
+                            &rewards.iter().copied().map(f64::from).collect::<Vec<_>>(),
+                        ),
                         &dones,
                         &truncs,
                     );
+                    bar.inc(1);
                 }
 
                 w_ctx.rollout_buffer.insert_final_step(&obs);
@@ -255,6 +284,7 @@ impl TrainingContext {
             let w_ctx = handle.join().unwrap();
             self.w_ctxs.push(w_ctx);
         }
+        bar.finish();
 
         // Copy the contents of each rollout buffer
         let state_buffer = Tensor::concatenate(
@@ -439,60 +469,60 @@ impl VecEnv {
         }
 
         // Compute last scores
-        // let mut reward_inpts = Vec::with_capacity(self.num_envs);
-        // for i in 0..self.num_envs {
-        //     let scaled_canvas = self.envs[i].scaled_canvas();
-        //     let reward_inpt = self.envs[i].reward_input(Some(&scaled_canvas));
-        //     reward_inpts.push(reward_inpt);
-        // }
-        // let reward_inpts = Tensor::concatenate(&reward_inpts, 0);
+        let mut reward_inpts = Vec::with_capacity(self.num_envs);
+        for i in 0..self.num_envs {
+            let scaled_canvas = self.envs[i].scaled_canvas();
+            let reward_inpt = self.envs[i].reward_input(Some(&scaled_canvas));
+            reward_inpts.push(reward_inpt);
+        }
+        let reward_inpts = Tensor::concatenate(&reward_inpts, 0);
 
-        // let mut scores_buf: Vec<f32> = vec![0.0; self.num_envs];
-        // let scores = self
-        //     .reward_model
-        //     .read()
-        //     .unwrap()
-        //     .forward_ts(&[reward_inpts])
-        //     .unwrap();
-        // scores.copy_data(&mut scores_buf, self.num_envs);
+        let mut scores_buf: Vec<f32> = vec![0.0; self.num_envs];
+        let scores = self
+            .reward_model
+            .read()
+            .unwrap()
+            .forward_ts(&[reward_inpts])
+            .unwrap();
+        scores.copy_data(&mut scores_buf, self.num_envs);
 
-        // for (i, (done, trunc)) in dones.iter_mut().zip(&truncs).enumerate() {
-        //     if !(*done || *trunc) {
-        //         let score = scores_buf[i];
-        //         rewards[i] += score - self.envs[i].last_score;
-        //         self.envs[i].last_score = score;
+        for (i, (done, trunc)) in dones.iter_mut().zip(&truncs).enumerate() {
+            if !(*done || *trunc) {
+                let score = scores_buf[i];
+                rewards[i] += score - self.envs[i].last_score;
+                self.envs[i].last_score = score;
 
-        //         // If reward model is very certain, mark as done
-        //         if score >= 0.95 && self.envs[i].counter >= 4 {
-        //             *done = true;
-        //             let obs = self.envs[i].reset();
-        //             obs_vec[i] = obs;
-        //         }
-        //     }
-        // }
+                // If reward model is very certain, mark as done
+                // if score >= 0.95 && self.envs[i].counter >= 4 {
+                //     *done = true;
+                //     let obs = self.envs[i].reset();
+                //     obs_vec[i] = obs;
+                // }
+            }
+        }
 
         // Compute last scores of reset environments
-        // let mut reward_inpts = Vec::with_capacity(self.num_envs);
-        // for i in 0..self.num_envs {
-        //     let reward_inpt = self.envs[i].reward_input(None);
-        //     reward_inpts.push(reward_inpt);
-        // }
-        // let reward_inpts = Tensor::concatenate(&reward_inpts, 0);
+        let mut reward_inpts = Vec::with_capacity(self.num_envs);
+        for i in 0..self.num_envs {
+            let reward_inpt = self.envs[i].reward_input(None);
+            reward_inpts.push(reward_inpt);
+        }
+        let reward_inpts = Tensor::concatenate(&reward_inpts, 0);
 
-        // let mut scores_buf: Vec<f32> = vec![0.0; self.num_envs];
-        // let scores = self
-        //     .reward_model
-        //     .read()
-        //     .unwrap()
-        //     .forward_ts(&[reward_inpts])
-        //     .unwrap();
-        // scores.copy_data(&mut scores_buf, self.num_envs);
+        let mut scores_buf: Vec<f32> = vec![0.0; self.num_envs];
+        let scores = self
+            .reward_model
+            .read()
+            .unwrap()
+            .forward_ts(&[reward_inpts])
+            .unwrap();
+        scores.copy_data(&mut scores_buf, self.num_envs);
 
-        // for (i, (&done, &trunc)) in dones.iter().zip(&truncs).enumerate() {
-        //     if done || trunc {
-        //         self.envs[i].last_score = scores_buf[i];
-        //     }
-        // }
+        for (i, (&done, &trunc)) in dones.iter().zip(&truncs).enumerate() {
+            if done || trunc {
+                self.envs[i].last_score = scores_buf[i];
+            }
+        }
 
         (obs_vec, rewards, dones, truncs)
     }
@@ -677,7 +707,7 @@ impl RolloutBuffer {
         &mut self,
         states: &Tensor,
         actions: &[Tensor],
-        action_probs: &[&Tensor],
+        action_probs: &[Tensor],
         rewards: &Tensor,
         dones: &[bool],
         truncs: &[bool],
@@ -686,9 +716,9 @@ impl RolloutBuffer {
         self.states.get(self.next).copy_(states);
         for i in 0..self.actions.len() {
             self.actions[i].get(self.next).copy_(&actions[i]);
-            self.action_probs[i].get(self.next).copy_(action_probs[i]);
+            self.action_probs[i].get(self.next).copy_(&action_probs[i]);
         }
-        self.rewards.get(self.next).copy_(&rewards);
+        self.rewards.get(self.next).copy_(rewards);
         self.dones.get(self.next).copy_(&Tensor::from_slice(dones));
         self.truncs
             .get(self.next)
