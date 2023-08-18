@@ -598,7 +598,7 @@ for step in tqdm(range(iterations), position=0):
             del obs_buf, act_bufs, act_probs_bufs, reward_buf, done_buf, trunc_buf
 
         # Train
-        step_p_loss, step_v_loss = train_ppo(
+        step_p_loss, step_v_loss, kl_div = train_ppo(
             p_net,
             v_net,
             p_opt,
@@ -670,6 +670,7 @@ for step in tqdm(range(iterations), position=0):
             "avg_training_reward": training_reward_mean,
             "max_training_reward": training_reward_max,
             "min_training_reward": training_reward_min,
+            "policy_kl_divergence": kl_div,
         }
     )
 
