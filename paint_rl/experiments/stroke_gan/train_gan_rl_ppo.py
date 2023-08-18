@@ -216,25 +216,11 @@ d_net.eval()
 d_opt = torch.optim.Adam(d_net.parameters(), lr=d_lr, betas=(0.5, 0.999))
 
 max_strokes = 50
-env = gym.vector.SyncVectorEnv(
-    [
-        lambda: NormalizeReward(
-            RefStrokeEnv(
-                canvas_size,
-                img_size,
-                ref_imgs,
-                d_net,
-                stroke_width=stroke_width,
-                max_strokes=max_strokes,
-            )
-        )
-        for _ in range(num_envs)
-    ]
-)
 test_env = RefStrokeEnv(
     canvas_size,
     img_size,
     ref_imgs,
+    stroke_imgs,
     d_net,
     stroke_width=stroke_width,
     render_mode="human",
@@ -250,6 +236,7 @@ if args.eval:
         canvas_size,
         img_size,
         ref_imgs,
+        stroke_imgs,
         d_net,
         stroke_width=stroke_width,
         render_mode="human",
@@ -313,6 +300,7 @@ if args.test:
         canvas_size,
         img_size,
         [test_img],
+        [test_img.mean(0)], # No real ground truth here
         None,
         stroke_width=stroke_width,
         render_mode="human",
@@ -373,10 +361,10 @@ wandb.init(
 )
 
 # Initialize policy and value networks
-obs_space = env.single_observation_space
+obs_space = test_env.observation_space
 assert obs_space.shape is not None
 obs_shape = torch.Size(obs_space.shape)
-act_space = env.single_action_space
+act_space = test_env.action_space
 assert isinstance(act_space, gym.spaces.Tuple)
 assert isinstance(act_space.spaces[0], gym.spaces.Box)
 assert isinstance(act_space.spaces[1], gym.spaces.Discrete)
@@ -626,6 +614,7 @@ for step in tqdm(range(iterations), position=0):
         reward_total = 0.0
         entropy_total = 0.0
         eval_obs = torch.Tensor(test_env.reset()[0])
+        avg_l1_dist = 0.0
         for _ in range(eval_steps):
             steps_taken = 0
             for _ in range(max_eval_steps):
@@ -656,6 +645,7 @@ for step in tqdm(range(iterations), position=0):
                 steps_taken += 1
                 reward_total += reward
                 if eval_done or eval_trunc:
+                    avg_l1_dist += test_env.get_ground_truth_l1()
                     eval_obs = torch.Tensor(test_env.reset()[0])
                     break
 
@@ -671,6 +661,7 @@ for step in tqdm(range(iterations), position=0):
             "max_training_reward": training_reward_max,
             "min_training_reward": training_reward_min,
             "policy_kl_divergence": kl_div,
+            "avg_ground_truth_l1": avg_l1_dist / eval_steps,
         }
     )
 

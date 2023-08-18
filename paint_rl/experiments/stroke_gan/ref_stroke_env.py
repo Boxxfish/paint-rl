@@ -41,6 +41,7 @@ class RefStrokeEnv(gym.Env):
         canvas_size: int,
         img_size: int,
         ref_imgs: List[np.ndarray],
+        ground_truth_imgs: List[np.ndarray],
         reward_model: Optional[nn.Module],
         render_mode: Optional[str] = None,
         stroke_width=1,
@@ -71,11 +72,14 @@ class RefStrokeEnv(gym.Env):
         self.stroke_width = stroke_width
         self.img_size = img_size
         self.ref_imgs = ref_imgs
+        self.ground_truth_imgs = ground_truth_imgs
         self.ref = np.zeros([0, img_size, img_size])
+        self.ground_truth = np.zeros([0, img_size, img_size])
         self.canvas = np.zeros([0, img_size, img_size])
         self.last_pos = (0, 0)
         self.num_strokes = 0
         self.counter = 0
+        self.ground_truth_l1 = 0.0
         self.render_mode = render_mode
         self.reward_model = reward_model
         self.last_score = 0.0
@@ -108,11 +112,14 @@ class RefStrokeEnv(gym.Env):
                 (self.img_size, self.img_size), resample=Image.Resampling.BILINEAR
             )
             new_stroke = np.array(scaled_canvas).transpose(2, 0, 1)[1] / 255.0
+            assert isinstance(new_stroke, np.ndarray)
             self.canvas = new_stroke
 
         self.counter += 1
         trunc = self.counter == self.num_strokes
 
+        # Compute L1 distance to ground truth
+        self.ground_truth_l1 = np.abs(self.ground_truth - self.canvas).sum()
 
         # Penalize not drawing far enough
         reward = 0.0
@@ -166,6 +173,7 @@ class RefStrokeEnv(gym.Env):
         self.canvas = np.zeros([self.img_size, self.img_size])
         index = random.randrange(0, len(self.ref_imgs))
         self.ref = self.ref_imgs[index]
+        self.ground_truth = self.ground_truth_imgs[index]
         self.num_strokes = self.max_strokes
         self.last_pen_down = True
         self.last_pos = (
@@ -231,6 +239,12 @@ class RefStrokeEnv(gym.Env):
             / img_size
         )
         return np.sqrt(pos_layer_x**2 + pos_layer_y**2)
+    
+    def get_ground_truth_l1(self) -> float:
+        """
+        Returns the L1 distance to the ground truth image.
+        """
+        return self.ground_truth_l1
 
 def add_random(arr: np.ndarray) -> np.ndarray:
     rand = np.random.normal(0.0, 0.1, arr.shape)
