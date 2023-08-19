@@ -95,14 +95,6 @@ def train_ppo(
             new_act_probs = sum(new_act_probs_discs)
             term1 = (new_act_probs - old_act_probs).exp() * advantages.squeeze()
             term2 = (1.0 + epsilon * advantages.squeeze().sign()) * advantages.squeeze()
-            print("Log probs:", action_probs_discs[2], new_log_probs_discs[2])
-            print("Sizes:", action_probs_discs[2].shape, new_log_probs_discs[2].shape)
-            print("KL Divergence:", [torch.distributions.kl_divergence(old_act_distr, new_act_distr)
-                .mean()
-                .item()
-                for old_act_distr, new_act_distr in zip(
-                    old_act_distrs_discs, new_act_distrs_discs
-                )])
             avg_kl_div += sum(
                 torch.distributions.kl_divergence(old_act_distr, new_act_distr)
                 .mean()

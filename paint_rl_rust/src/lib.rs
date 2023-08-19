@@ -282,7 +282,6 @@ impl TrainingContext {
 
                     let (obs_, rewards, dones, truncs) =
                         w_ctx.env.step(&actions_cont, &action_down);
-                    obs = Tensor::stack(&obs_, 0);
                     w_ctx.rollout_buffer.insert_step(
                         &obs,
                         &actions
@@ -301,6 +300,7 @@ impl TrainingContext {
                         &dones,
                         &truncs,
                     );
+                    obs = Tensor::stack(&obs_, 0);
                     bar.inc(1);
                 }
 
