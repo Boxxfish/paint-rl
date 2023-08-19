@@ -61,6 +61,7 @@ canvas_size = 256
 quant_size = 32
 entropy_coeff = 0.001
 num_workers = 8
+warmup_steps = 20
 device = torch.device("cuda")  # Device to use during training.
 
 # Argument parsing
@@ -449,7 +450,6 @@ for step in tqdm(range(iterations), position=0):
     )
     traced.save(p_net_path)
 
-    warmup_steps = 5
     avg_disc_loss_real = 0.0
     avg_disc_loss_generated = 0.0
     if step >= warmup_steps:
@@ -598,7 +598,7 @@ for step in tqdm(range(iterations), position=0):
             discount,
             lambda_,
             epsilon,
-            entropy_coeff=10.0 if step < warmup_steps else entropy_coeff,
+            entropy_coeff=100.0 if step < warmup_steps else entropy_coeff,
         )
         total_p_loss += step_p_loss
         total_v_loss += step_v_loss
