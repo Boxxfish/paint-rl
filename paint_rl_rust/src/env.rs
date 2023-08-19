@@ -12,7 +12,10 @@ pub struct SimCanvasEnv {
     scaled_size: u32,
     pub counter: u32,
     ref_imgs: Arc<RwLock<Vec<ndarray::Array3<f32>>>>,
+    ground_truth_imgs: Arc<RwLock<Vec<ndarray::Array2<f32>>>>,
     ref_img: Tensor,
+    ground_truth_img: Tensor,
+    last_ground_truth_l1: f32,
     pub ref_img_index: usize,
     max_strokes: u32,
     last_pen_down: bool,
@@ -29,6 +32,7 @@ impl SimCanvasEnv {
         scaled_size: u32,
         brush_diameter: u32,
         ref_imgs: &Arc<RwLock<Vec<ndarray::Array3<f32>>>>,
+        ground_truth_imgs: &Arc<RwLock<Vec<ndarray::Array2<f32>>>>,
         max_strokes: u32,
     ) -> Self {
         let options = (tch::Kind::Float, tch::Device::Cpu);
@@ -56,6 +60,9 @@ impl SimCanvasEnv {
             ref_img_index: 0,
             scaled_canvas_real: Tensor::zeros([], (tch::Kind::Float, tch::Device::Cpu)),
             dirty: true,
+            ground_truth_imgs: ground_truth_imgs.clone(),
+            ground_truth_img: Tensor::zeros([], (tch::Kind::Float, tch::Device::Cpu)),
+            last_ground_truth_l1: 0.0,
         }
     }
 
@@ -105,6 +112,15 @@ impl SimCanvasEnv {
             reward = -0.2;
         }
         self.last_pen_down = pen_down;
+
+        // Interpolate reward with L1 distance to ground truth
+        let scaled = self.scaled_canvas();
+        let ground_truth_l1 = (&self.ground_truth_img - scaled)
+            .abs()
+            .sum(tch::Kind::Float)
+            .double_value(&[]) as f32;
+        reward += -(ground_truth_l1 - self.last_ground_truth_l1) * 0.01;
+        self.last_ground_truth_l1 = ground_truth_l1;
 
         let scale_ratio = self.scaled_size as f32 / self.sim_canvas.options.canvas_size as f32;
         let pos_channel = self.gen_pos_channel(
@@ -175,6 +191,8 @@ impl SimCanvasEnv {
         self.counter = 0;
         let ref_imgs = &self.ref_imgs.read().unwrap();
         self.ref_img = Tensor::try_from(&ref_imgs[index]).unwrap();
+        let ground_truth_imgs = &self.ground_truth_imgs.read().unwrap();
+        self.ground_truth_img = Tensor::try_from(&ground_truth_imgs[index]).unwrap();
         self.last_pen_down = false;
         let scale_ratio = self.scaled_size as f32 / self.sim_canvas.options.canvas_size as f32;
         let pos_channel = self.gen_pos_channel(
@@ -197,6 +215,12 @@ impl SimCanvasEnv {
         self.prev_frame = this_frame;
         self.sim_canvas.clear();
         self.dirty = true;
+
+        let scaled = Tensor::zeros([self.scaled_size as i64, self.scaled_size as i64], options);
+        self.last_ground_truth_l1 = (&self.ground_truth_img - scaled)
+            .abs()
+            .sum(tch::Kind::Float)
+            .double_value(&[]) as f32;
 
         obs
     }

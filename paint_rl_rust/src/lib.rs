@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use env::SimCanvasEnv;
 use image::imageops::FilterType;
 use indicatif::{ProgressBar, ProgressIterator};
-use ndarray::Dim;
+use ndarray::{Axis, Dim};
 use numpy::{IntoPyArray, PyArray};
 use pyo3::prelude::*;
 use pyo3_tch::PyTensor;
@@ -18,6 +18,7 @@ pub mod sim_canvas;
 pub struct TrainingContext {
     w_ctxs: Vec<WorkerContext>,
     ref_imgs: Arc<RwLock<Vec<ndarray::Array3<f32>>>>,
+    ground_truth_imgs: Arc<RwLock<Vec<ndarray::Array2<f32>>>>,
     reward_model_path: String,
     p_net_path: String,
     num_workers: usize,
@@ -45,6 +46,7 @@ impl TrainingContext {
     ) -> Self {
         // Load all images
         let mut ref_imgs = Vec::new();
+        let mut ground_truth_imgs = Vec::new();
         let path = std::path::Path::new(ref_img_path);
         let count = if let Some(max_refs) = max_refs {
             max_refs
@@ -58,6 +60,8 @@ impl TrainingContext {
             .progress_count(count)
         {
             let dir = dir.unwrap();
+
+            // Read reference image
             let mut path = dir.path().to_path_buf();
             path.push("final.png");
             let ref_img = image::open(path).unwrap();
@@ -66,12 +70,30 @@ impl TrainingContext {
             let ref_img_arr = ndarray::arr1(&ref_img.clone().into_vec())
                 .into_shape((img_size as usize, img_size as usize, 3))
                 .unwrap()
-                .mapv(|x| x as f32)
+                .mapv(f32::from)
                 .permuted_axes([2, 0, 1])
                 / 255.0;
             ref_imgs.push(ref_img_arr.as_standard_layout().into_owned());
+
+            // Read ground truth image
+            let mut path = dir.path().to_path_buf();
+            path.push("outlines.png");
+            let ground_truth_img = image::open(path).unwrap();
+            let ground_truth_img =
+                ground_truth_img.resize(img_size, img_size, FilterType::Gaussian);
+            let ground_truth_img = ground_truth_img.to_rgb8();
+            let ground_truth_img_arr = ndarray::arr1(&ground_truth_img.clone().into_vec())
+                .into_shape((img_size as usize, img_size as usize, 3))
+                .unwrap()
+                .mapv(f32::from)
+                .permuted_axes([2, 0, 1])
+                .select(Axis(0), &[0])
+                .remove_axis(Axis(0))
+                / 255.0;
+            ground_truth_imgs.push(ground_truth_img_arr.as_standard_layout().into_owned());
         }
         let ref_imgs = Arc::new(RwLock::new(ref_imgs));
+        let ground_truth_imgs = Arc::new(RwLock::new(ground_truth_imgs));
 
         // Set up workers
         let reward_model = Arc::new(RwLock::new(tch::CModule::load(reward_model_path).unwrap()));
@@ -80,7 +102,16 @@ impl TrainingContext {
         for _ in 0..num_workers {
             let mut env = VecEnv::new(
                 (0..(envs_per_worker))
-                    .map(|_| SimCanvasEnv::new(canvas_size, img_size, 4, &ref_imgs, max_strokes))
+                    .map(|_| {
+                        SimCanvasEnv::new(
+                            canvas_size,
+                            img_size,
+                            4,
+                            &ref_imgs,
+                            &ground_truth_imgs,
+                            max_strokes,
+                        )
+                    })
                     .collect(),
                 &reward_model,
             );
@@ -112,6 +143,7 @@ impl TrainingContext {
             max_strokes,
             canvas_size,
             img_size,
+            ground_truth_imgs,
         }
     }
 
@@ -139,6 +171,7 @@ impl TrainingContext {
                                 self.img_size,
                                 4,
                                 &self.ref_imgs,
+                                &self.ground_truth_imgs,
                                 self.max_strokes,
                             )
                         })

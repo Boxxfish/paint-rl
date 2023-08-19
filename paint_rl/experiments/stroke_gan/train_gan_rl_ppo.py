@@ -43,14 +43,14 @@ num_envs = 128  # Number of environments to step through at once during sampling
 train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
-train_batch_size = 1024  # Minibatch size while training models.
+train_batch_size = 2048  # Minibatch size while training models.
 discount = 0.95  # Discount factor applied to rewards.
 lambda_ = 0.95  # Lambda for GAE.
 epsilon = 0.2  # Epsilon for importance sample clipping.
 max_eval_steps = 300  # Number of eval runs to average over.
 eval_steps = 4  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
-p_lr = 0.0001  # Learning rate of the policy net.
+p_lr = 0.00003 # Learning rate of the policy net.
 d_lr = 0.0003  # Learning rate of the discriminator.
 gen_steps = 1  # Number of generator steps per iteration.
 disc_steps = 1  # Number of discriminator steps per iteration.
@@ -598,7 +598,7 @@ for step in tqdm(range(iterations), position=0):
             discount,
             lambda_,
             epsilon,
-            entropy_coeff=1.0 if step < warmup_steps else entropy_coeff,
+            entropy_coeff=10.0 if step < warmup_steps else entropy_coeff,
         )
         total_p_loss += step_p_loss
         total_v_loss += step_v_loss
