@@ -105,7 +105,8 @@ impl SimCanvasEnv {
         }
         self.dirty = true;
         self.counter += 1;
-        let trunc = self.counter == self.max_strokes;
+        let trunc = false;
+        let done = self.counter == self.max_strokes;
 
         // Penalize refusing to put down strokes
         if !self.last_pen_down && !pen_down {
@@ -132,7 +133,7 @@ impl SimCanvasEnv {
         let obs = Tensor::concatenate(&[&self.prev_frame, &this_frame, &self.ref_img], 0);
         self.prev_frame = this_frame;
 
-        (obs, reward, false, trunc)
+        (obs, reward, done, trunc)
     }
 
     /// Generates the positional channel.

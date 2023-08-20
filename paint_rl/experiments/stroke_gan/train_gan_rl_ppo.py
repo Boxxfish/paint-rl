@@ -39,7 +39,7 @@ from paint_rl.experiments.supervised_strokes.train_supervised_all import (
 _: Any
 
 # Hyperparameters
-num_envs = 128  # Number of environments to step through at once during sampling.
+num_envs = 64  # Number of environments to step through at once during sampling.
 train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
@@ -59,9 +59,9 @@ disc_batch_size = 64  # Batch size for the discriminator.
 stroke_width = 4
 canvas_size = 256
 quant_size = 32
-entropy_coeff = 0.001
+entropy_coeff = 0.0003
 num_workers = 8
-warmup_steps = 20
+warmup_steps = 10
 device = torch.device("cuda")  # Device to use during training.
 
 # Argument parsing
@@ -374,6 +374,8 @@ action_count_discrete = int(act_space.spaces[1].n)
 v_net = ValueNet(SharedNet(img_size))
 p_net = PolicyNet(img_size, quant_size)
 p_net.load_state_dict(torch.load("temp/stroke_net.pt"))  # For loading from pretraining
+for param in p_net.shared.parameters():
+    param.requires_grad = False
 v_opt = torch.optim.Adam(v_net.parameters(), lr=v_lr, betas=(0.5, 0.999))
 p_opt = torch.optim.Adam(p_net.parameters(), lr=p_lr, betas=(0.5, 0.999))
 
@@ -443,6 +445,10 @@ assert isinstance(buffers[1], ActionRolloutBuffer)
 assert isinstance(buffers[2], ActionRolloutBuffer)
 
 for step in tqdm(range(iterations), position=0):
+    if step == warmup_steps:
+        for param in p_net.shared.parameters():
+            param.requires_grad = True
+
     # Export models
     traced = torch.jit.trace(
         p_net,
@@ -598,7 +604,7 @@ for step in tqdm(range(iterations), position=0):
             discount,
             lambda_,
             epsilon,
-            entropy_coeff=100.0 if step < warmup_steps else entropy_coeff,
+            entropy_coeff=10.0 if step < warmup_steps else entropy_coeff,
         )
         total_p_loss += step_p_loss
         total_v_loss += step_v_loss

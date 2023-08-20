@@ -116,7 +116,7 @@ class RefStrokeEnv(gym.Env):
             self.canvas = new_stroke
 
         self.counter += 1
-        trunc = self.counter == self.num_strokes
+        trunc = False
 
         # Compute L1 distance to ground truth
         self.ground_truth_l1 = np.abs(self.ground_truth - self.canvas).sum()
@@ -149,11 +149,7 @@ class RefStrokeEnv(gym.Env):
             reward += score - self.last_score
         self.last_score = score
 
-        # If reward model is very certain, mark as done
-        done = False
-        if score >= 0.95 and self.counter >= 4:
-            print("Threshold hit! Score:", score)
-            done = True
+        done = self.counter == self.num_strokes
         # print(score)
         # input()
 
