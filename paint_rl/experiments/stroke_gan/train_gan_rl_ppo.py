@@ -61,7 +61,7 @@ canvas_size = 256
 quant_size = 32
 entropy_coeff = 0.0003
 num_workers = 8
-warmup_steps = 10
+warmup_steps = 15
 device = torch.device("cuda")  # Device to use during training.
 
 # Argument parsing
@@ -374,8 +374,7 @@ action_count_discrete = int(act_space.spaces[1].n)
 v_net = ValueNet(SharedNet(img_size))
 p_net = PolicyNet(img_size, quant_size)
 p_net.load_state_dict(torch.load("temp/stroke_net.pt"))  # For loading from pretraining
-for param in p_net.shared.parameters():
-    param.requires_grad = False
+p_net.shared.set_frozen(True)
 v_opt = torch.optim.Adam(v_net.parameters(), lr=v_lr, betas=(0.5, 0.999))
 p_opt = torch.optim.Adam(p_net.parameters(), lr=p_lr, betas=(0.5, 0.999))
 
@@ -446,8 +445,7 @@ assert isinstance(buffers[2], ActionRolloutBuffer)
 
 for step in tqdm(range(iterations), position=0):
     if step == warmup_steps:
-        for param in p_net.shared.parameters():
-            param.requires_grad = True
+        p_net.shared.set_frozen(False)
 
     # Export models
     traced = torch.jit.trace(

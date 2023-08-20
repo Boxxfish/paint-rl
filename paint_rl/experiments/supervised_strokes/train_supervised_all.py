@@ -93,6 +93,10 @@ class SharedNet(nn.Module):
         x = torch.max(torch.max(x, 3).values, 2).values
         return x
 
+    def set_frozen(self, frozen: bool):
+        for param in self.parameters():
+            param.requires_grad = not frozen
+        self.pos.requires_grad = False
 
 class StrokeNet(nn.Module):
     def __init__(self, size: int, quant_size: int):
