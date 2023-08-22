@@ -43,7 +43,7 @@ num_envs = 64  # Number of environments to step through at once during sampling.
 train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
 train_iters = 2  # Number of passes over the samples collected.
-train_batch_size = 2048  # Minibatch size while training models.
+train_batch_size = 1024  # Minibatch size while training models.
 discount = 0.95  # Discount factor applied to rewards.
 lambda_ = 0.95  # Lambda for GAE.
 epsilon = 0.2  # Epsilon for importance sample clipping.
@@ -59,9 +59,9 @@ disc_batch_size = 64  # Batch size for the discriminator.
 stroke_width = 4
 canvas_size = 256
 quant_size = 32
-entropy_coeff = 0.0003
+entropy_coeff = 0.0001
 num_workers = 8
-warmup_steps = 15
+warmup_steps = 0
 device = torch.device("cuda")  # Device to use during training.
 
 # Argument parsing

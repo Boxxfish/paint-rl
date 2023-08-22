@@ -50,6 +50,7 @@ def train_ppo(
     assert isinstance(buffer[0], RolloutBuffer)
 
     avg_kl_div = 0.0
+    iterations_done = 0
     for _ in tqdm(range(train_iters), position=1):
         batches = buffer[0].samples_merged(
             buffer[1:], train_batch_size, discount, lambda_, v_net_frozen
@@ -95,7 +96,7 @@ def train_ppo(
             new_act_probs = sum(new_act_probs_discs)
             term1 = (new_act_probs - old_act_probs).exp() * advantages.squeeze()
             term2 = (1.0 + epsilon * advantages.squeeze().sign()) * advantages.squeeze()
-            avg_kl_div += sum(
+            new_kl = sum(
                 torch.distributions.kl_divergence(old_act_distr, new_act_distr)
                 .mean()
                 .item()
@@ -103,6 +104,17 @@ def train_ppo(
                     old_act_distrs_discs, new_act_distrs_discs
                 )
             ) / len(buffer)
+            
+            # Stop taking steps if KL divergence passes threshold
+            if new_kl > 0.5 and iterations_done > 0:
+                if device.type != "cpu":
+                    p_net.cpu()
+                    v_net.cpu()
+                p_net.eval()
+                v_net.eval()
+                return (total_p_loss, total_v_loss, avg_kl_div / iterations_done)
+
+            avg_kl_div += new_kl
             entropy = sum(
                 new_act_distr.entropy().mean() for new_act_distr in new_act_distrs_discs
             ) / len(buffer)
@@ -124,11 +136,12 @@ def train_ppo(
                 p_opt.zero_grad()
                 v_opt.zero_grad()
 
+            iterations_done += 1
+
     if device.type != "cpu":
         p_net.cpu()
         v_net.cpu()
     p_net.eval()
     v_net.eval()
 
-    batch_count = (buffer[0].num_envs * buffer[0].num_steps) // train_batch_size
-    return (total_p_loss, total_v_loss, avg_kl_div / batch_count)
+    return (total_p_loss, total_v_loss, avg_kl_div / iterations_done)

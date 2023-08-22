@@ -98,6 +98,7 @@ class SharedNet(nn.Module):
             param.requires_grad = not frozen
         self.pos.requires_grad = False
 
+
 class StrokeNet(nn.Module):
     def __init__(self, size: int, quant_size: int):
         nn.Module.__init__(self)
@@ -281,13 +282,21 @@ def load_random_ds(
 def disc_probs_to_cont_actions(
     stroke_mid: np.ndarray, stroke_end: np.ndarray, quant_size: int
 ) -> np.ndarray:
-    mid_index = stroke_mid.argmax(1, keepdims=True)
-    end_index = stroke_end.argmax(1, keepdims=True)
+    mid_index = torch.distributions.Categorical(
+        logits=torch.tensor(stroke_mid).exp()
+    ).sample([1]).numpy()
+    end_index = torch.distributions.Categorical(
+        logits=torch.tensor(stroke_end).exp()
+    ).sample([1]).numpy()
+    # print(stroke_end.exp())
+    # plt.imshow(stroke_end.exp().reshape(32, 32))
+    # plt.show()
     mid_y = mid_index // quant_size
     mid_x = mid_index - mid_y * quant_size
     end_y = end_index // quant_size
     end_x = end_index - end_y * quant_size
     return np.concatenate([mid_x, mid_y, end_x, end_y], 1) / quant_size
+
 
 # Converts discrete stroke actions to a continuous one.
 def disc_actions_to_cont_actions(
@@ -325,7 +334,9 @@ def main():
         with torch.no_grad():
             net = StrokeNet(img_size, quant_size)
             net.load_state_dict(torch.load("temp/stroke_net.pt"))
-            env = RefStrokeEnv(img_size, img_size, imgs, None, "human", max_strokes=100)
+            env = RefStrokeEnv(
+                img_size, img_size, imgs, imgs, None, "human", max_strokes=100
+            )
             obs = torch.from_numpy(env.reset()[0]).float().unsqueeze(0)
             while True:
                 stroke_mid, stroke_end, pen_down = net(obs)
@@ -434,7 +445,7 @@ def main():
     valid_batch_stroke_mid = valid_stroke_mid.cuda()
     valid_batch_stroke_end = valid_stroke_end.cuda()
     valid_batch_pen_down = valid_pen_down.cuda()
-    disc_crit = nn.NLLLoss()
+    disc_crit = nn.CrossEntropyLoss(label_smoothing=0.1)
     for j in tqdm(range(1000000)):
         mean_loss = 0.0
         mean_mid_loss = 0.0
