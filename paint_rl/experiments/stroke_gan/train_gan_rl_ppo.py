@@ -39,10 +39,10 @@ from paint_rl.experiments.supervised_strokes.train_supervised_all import (
 _: Any
 
 # Hyperparameters
-num_envs = 64  # Number of environments to step through at once during sampling.
+num_envs = 32  # Number of environments to step through at once during sampling.
 train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
-train_iters = 2  # Number of passes over the samples collected.
+train_iters = 4  # Number of passes over the samples collected.
 train_batch_size = 1024  # Minibatch size while training models.
 discount = 0.95  # Discount factor applied to rewards.
 lambda_ = 0.95  # Lambda for GAE.
@@ -54,12 +54,12 @@ p_lr = 0.00003 # Learning rate of the policy net.
 d_lr = 0.0003  # Learning rate of the discriminator.
 gen_steps = 1  # Number of generator steps per iteration.
 disc_steps = 1  # Number of discriminator steps per iteration.
-disc_ds_size = 1024  # Size of the discriminator dataset. Half will be generated.
+disc_ds_size = 256  # Size of the discriminator dataset. Half will be generated.
 disc_batch_size = 64  # Batch size for the discriminator.
 stroke_width = 4
 canvas_size = 256
 quant_size = 32
-entropy_coeff = 0.0001
+entropy_coeff = 0.001
 num_workers = 8
 warmup_steps = 0
 device = torch.device("cuda")  # Device to use during training.
@@ -193,7 +193,7 @@ class Discriminator(nn.Module):
 
 # Load dataset
 img_size = IMG_SIZE
-ds_path = Path("temp/all_outputs")
+ds_path = Path("temp/sketch_outputs")
 ref_imgs = []
 stroke_imgs = []
 print("Loading dataset...")
@@ -398,7 +398,7 @@ traced.save(d_net_path)
 training_context = TrainingContext(
     img_size,
     canvas_size,
-    "temp/all_outputs",
+    "temp/sketch_outputs",
     p_net_path,
     d_net_path,
     max_strokes,

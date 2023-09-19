@@ -106,7 +106,7 @@ def train_ppo(
             ) / len(buffer)
             
             # Stop taking steps if KL divergence passes threshold
-            if new_kl > 0.5 and iterations_done > 0:
+            if new_kl > 0.1 and iterations_done > 0:
                 if device.type != "cpu":
                     p_net.cpu()
                     v_net.cpu()

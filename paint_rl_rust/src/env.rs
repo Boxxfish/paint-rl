@@ -120,7 +120,7 @@ impl SimCanvasEnv {
             .abs()
             .sum(tch::Kind::Float)
             .double_value(&[]) as f32;
-        // reward += -(ground_truth_l1 - self.last_ground_truth_l1) * 0.01;
+        reward += -(ground_truth_l1 - self.last_ground_truth_l1) * 0.003;
         self.last_ground_truth_l1 = ground_truth_l1;
 
         let scale_ratio = self.scaled_size as f32 / self.sim_canvas.options.canvas_size as f32;

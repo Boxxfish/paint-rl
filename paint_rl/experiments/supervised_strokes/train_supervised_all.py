@@ -211,51 +211,59 @@ def load_random_ds(
             break
         try:
             img = (
-                Image.open(f"temp/all_outputs/{i}/final.png")
+                Image.open(f"temp/sketch_outputs/{i}/final.png")
                 .convert("RGB")
                 .resize((img_size, img_size))
             )
             img_data = np.array(img).transpose(2, 0, 1) / 255.0
-            with open(f"temp/all_outputs/{i}/strokes.json", "r") as f:
+            with open(f"temp/sketch_outputs/{i}/strokes.json", "r") as f:
                 path = json.load(f)
-            if len(path["cont"]) == 0:
-                continue
+
+            all_actions = path["actions"]
+            shape_indices = list(range(len(all_actions)))
+            random.shuffle(shape_indices)
 
             stroke_img = Image.new("L", (img_size, img_size))
             stroke_draw = ImageDraw.Draw(stroke_img)
 
-            last_point = np.array(path["start"]).astype(float) / orig_img_size
+            last_point = np.array([random.random(), random.random()])
             prev_frame = np.zeros([2, img_size, img_size])
-            for i, (c, d) in enumerate(zip(path["cont"], path["disc"])):
+
+            for shape_idx in shape_indices:
                 if len(ds_x) == size:
                     break
+                cont, disc = all_actions[shape_idx]
 
-                mid_point = np.array([c[0], c[1]]).astype(float) / orig_img_size
-                end_point = np.array([c[2], c[3]]).astype(float) / orig_img_size
-                if i == 0:
-                    last_point = np.array([random.random(), random.random()]).astype(
-                        float
+                if len(cont) == 0:
+                    continue
+
+                for i, (c, d) in enumerate(zip(cont, disc)):
+                    if len(ds_x) == size:
+                        break
+
+                    mid_point = np.array([c[0], c[1]]).astype(float) / orig_img_size
+                    end_point = np.array([c[2], c[3]]).astype(float) / orig_img_size
+                    if i == 0:
+                        mid_point = (last_point + end_point) / 2.0
+
+                    # 25% chance of actually adding example
+                    will_add = random.random() < 0.25
+                    prev_frame, last_point = stroke(
+                        last_point,
+                        mid_point,
+                        end_point,
+                        img_data,
+                        stroke_img,
+                        stroke_draw,
+                        ds_x if will_add else [],
+                        stroke_mid if will_add else [],
+                        stroke_end if will_add else [],
+                        pen_down if will_add else [],
+                        img_size,
+                        prev_frame,
+                        quant_size,
+                        up=d == 0,
                     )
-                    mid_point = (last_point + end_point) / 2.0
-
-                # 50% chance of actually adding example
-                will_add = random.random() < 0.5
-                prev_frame, last_point = stroke(
-                    last_point,
-                    mid_point,
-                    end_point,
-                    img_data,
-                    stroke_img,
-                    stroke_draw,
-                    ds_x if will_add else [],
-                    stroke_mid if will_add else [],
-                    stroke_end if will_add else [],
-                    pen_down if will_add else [],
-                    img_size,
-                    prev_frame,
-                    quant_size,
-                    up=d == 0,
-                )
         except KeyboardInterrupt:
             quit()
         except Exception as e:
@@ -325,7 +333,7 @@ def main():
         imgs = []
         for i in tqdm(range(100)):
             img = (
-                Image.open(f"temp/all_outputs/{i}/final.png")
+                Image.open(f"temp/sketch_outputs/{i}/final.png")
                 .convert("RGB")
                 .resize((img_size, img_size))
             )
@@ -352,33 +360,33 @@ def main():
                     obs = torch.from_numpy(env.reset()[0]).float().unsqueeze(0)
 
     # Load dataset
-    ds_x = []
-    stroke_mid_actions = []
-    stroke_end_actions = []
-    pen_down_actions = []
     valid_ds_x = []
     valid_stroke_mid_actions = []
     valid_stroke_end_actions = []
     valid_pen_down_actions = []
     valid_size = 8
+    train_size = 30_000
     print("Loading data.")
     for i in tqdm(range(1500)):
-        valid = i < valid_size
+        if i >= valid_size:
+            break
         try:
             img = (
-                Image.open(f"temp/all_outputs/{i}/final.png")
+                Image.open(f"temp/sketch_outputs/{i}/final.png")
                 .convert("RGB")
                 .resize((img_size, img_size))
             )
             img_data = np.array(img).transpose(2, 0, 1) / 255.0
-            with open(f"temp/all_outputs/{i}/strokes.json", "r") as f:
+            with open(f"temp/sketch_outputs/{i}/strokes.json", "r") as f:
                 path = json.load(f)
             stroke_img = Image.new("L", (img_size, img_size))
             stroke_draw = ImageDraw.Draw(stroke_img)
 
+            cont = sum([a[0] for a in path["actions"]], start=[])
+            disc = sum([a[1] for a in path["actions"]], start=[])
             last_point = np.array(path["start"]).astype(float) / orig_img_size
             prev_frame = np.zeros([2, img_size, img_size])
-            for c, d in zip(path["cont"], path["disc"]):
+            for c, d in zip(cont, disc):
                 prev_frame, last_point = stroke(
                     last_point,
                     np.array([c[0], c[1]]).astype(float) / orig_img_size,
@@ -386,10 +394,10 @@ def main():
                     img_data,
                     stroke_img,
                     stroke_draw,
-                    ds_x if not valid else valid_ds_x,
-                    stroke_mid_actions if not valid else valid_stroke_mid_actions,
-                    stroke_end_actions if not valid else valid_stroke_end_actions,
-                    pen_down_actions if not valid else valid_pen_down_actions,
+                    valid_ds_x,
+                    valid_stroke_mid_actions,
+                    valid_stroke_end_actions,
+                    valid_pen_down_actions,
                     img_size,
                     prev_frame,
                     quant_size,
@@ -401,25 +409,24 @@ def main():
             quit()
         except Exception as e:
             print(f"Error processing {i}: {e}")
-    train_x = torch.from_numpy(np.stack(ds_x))
-    train_stroke_mid = torch.from_numpy(np.stack(stroke_mid_actions))
-    train_stroke_end = torch.from_numpy(np.stack(stroke_end_actions))
-    train_pen_down = torch.from_numpy(np.stack(pen_down_actions))
+    (
+        train_x,
+        train_stroke_mid,
+        train_stroke_end,
+        train_pen_down,
+    ) = load_random_ds(
+        valid_size, train_size, img_size, orig_img_size, quant_size
+    )
     valid_x = torch.from_numpy(np.stack(valid_ds_x))
     valid_stroke_mid = torch.from_numpy(np.stack(valid_stroke_mid_actions))
     valid_stroke_end = torch.from_numpy(np.stack(valid_stroke_end_actions))
     valid_pen_down = torch.from_numpy(np.stack(valid_pen_down_actions))
     del (
-        ds_x,
-        stroke_mid_actions,
-        stroke_end_actions,
-        pen_down_actions,
         valid_ds_x,
         valid_stroke_mid_actions,
         valid_stroke_end_actions,
         valid_pen_down_actions,
     )
-    train_size = train_x.shape[0]
     print("Train size:", train_size)
     print("Valid size:", valid_x.shape[0])
 
