@@ -50,7 +50,7 @@ epsilon = 0.2  # Epsilon for importance sample clipping.
 max_eval_steps = 300  # Number of eval runs to average over.
 eval_steps = 4  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
-p_lr = 0.00003 # Learning rate of the policy net.
+p_lr = 0.0000003 # Learning rate of the policy net.
 d_lr = 0.0003  # Learning rate of the discriminator.
 gen_steps = 1  # Number of generator steps per iteration.
 disc_steps = 1  # Number of discriminator steps per iteration.
@@ -58,7 +58,7 @@ disc_ds_size = 256  # Size of the discriminator dataset. Half will be generated.
 disc_batch_size = 64  # Batch size for the discriminator.
 stroke_width = 4
 canvas_size = 256
-quant_size = 32
+quant_size = 16
 entropy_coeff = 0.001
 num_workers = 8
 warmup_steps = 0
@@ -269,18 +269,22 @@ if args.eval:
                 obs_, reward, eval_done, eval_trunc, _ = test_env.step(
                     (actions_cont, actions_discs[2])
                 )
-                mid_layer = action_probs_discs[0].exp().reshape(32, 32)
-                end_layer = action_probs_discs[1].exp().reshape(32, 32)
-                img = (
-                    np.delete(
-                        np.delete(eval_obs[-3:], list(range(0, 64, 2)), axis=1),
-                        list(range(0, 64, 2)),
-                        axis=2,
-                    )
-                    / 2.0
-                ) + np.stack([mid_layer, end_layer, np.zeros([32, 32])])
+
+                # Uncomment to show action probability maps
+                # mid_layer = action_probs_discs[0].exp().reshape(16, 16)
+                # end_layer = action_probs_discs[1].exp().reshape(16, 16)
+                # removal_indices = list(range(0, 64, 4)) + list(range(1, 64, 4)) + list(range(2, 64, 4))
+                # img = (
+                #     np.delete(
+                #         np.delete(eval_obs[-3:], removal_indices, axis=1),
+                #         removal_indices,
+                #         axis=2,
+                #     )
+                #     / 2.0
+                # ) + np.stack([mid_layer, end_layer, np.zeros([16, 16])])
                 # plt.imshow(img.permute(1, 2, 0))
                 # plt.show()
+                
                 test_env.render()
                 eval_obs = torch.Tensor(obs_)
                 steps_taken += 1

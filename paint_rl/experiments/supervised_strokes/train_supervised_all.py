@@ -36,47 +36,39 @@ class SharedNet(nn.Module):
     def __init__(self, size: int):
         nn.Module.__init__(self)
         self.net = nn.Sequential(
-            nn.Conv2d(7 + 2, 32, 7, stride=2),
+            nn.Conv2d(7 + 2, 32, 3, stride=2, padding=1),
             ResBlock(
                 nn.Sequential(
                     nn.ReLU(),
-                    nn.Conv2d(32, 32, 5, padding=2),
+                    nn.Conv2d(32, 32, 3, padding=1),
                     nn.ReLU(),
-                    nn.Conv2d(32, 32, 5, padding=2),
+                    nn.Conv2d(32, 32, 3, padding=1),
                     nn.ReLU(),
                 )
             ),
-            nn.Conv2d(32, 64, 3, stride=2),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
             ResBlock(
                 nn.Sequential(
                     nn.ReLU(),
-                    nn.Conv2d(64, 64, 3, padding=1),
+                    nn.Conv2d(64, 64, 5, padding=2),
                     nn.ReLU(),
-                    nn.Conv2d(64, 64, 3, padding=1),
+                    nn.Conv2d(64, 64, 5, padding=2),
                     nn.ReLU(),
                 )
             ),
-            nn.Conv2d(64, 128, 3, stride=2),
+            nn.Conv2d(64, 64, 5, padding=2),
             ResBlock(
                 nn.Sequential(
                     nn.ReLU(),
-                    nn.Conv2d(128, 128, 3, padding=1),
+                    nn.Conv2d(64, 64, 7, padding=3),
                     nn.ReLU(),
-                    nn.Conv2d(128, 128, 3, padding=1),
-                    nn.ReLU(),
-                )
-            ),
-            nn.Conv2d(128, 256, 3, stride=2),
-            ResBlock(
-                nn.Sequential(
-                    nn.ReLU(),
-                    nn.Conv2d(256, 256, 3, padding=1),
-                    nn.ReLU(),
-                    nn.Conv2d(256, 256, 3, padding=1),
+                    nn.Conv2d(64, 64, 7, padding=3),
                     nn.ReLU(),
                 )
             ),
         )
+        self.downscale = nn.Conv2d(64, 8, 1)
+        self.flatten = nn.Flatten()
         # Pos encoding
         w = torch.arange(0, size).unsqueeze(0).repeat([size, 1])
         h = torch.arange(0, size).unsqueeze(0).repeat([size, 1]).T
@@ -90,7 +82,8 @@ class SharedNet(nn.Module):
         pos_enc = self.pos.repeat([batch_size, 1, 1, 1])
         x = torch.cat([x, pos_enc], dim=1)
         x = self.net(x)
-        x = torch.max(torch.max(x, 3).values, 2).values
+        x = self.downscale(x)
+        x = self.flatten(x)
         return x
 
     def set_frozen(self, frozen: bool):
@@ -104,21 +97,21 @@ class StrokeNet(nn.Module):
         nn.Module.__init__(self)
         self.shared = SharedNet(size)
         self.pen_down = nn.Sequential(
-            nn.Linear(256, 256),
+            nn.Linear(quant_size * quant_size * 8, 256),
             nn.ReLU(),
             nn.Linear(256, 2),
             nn.LogSoftmax(1),
         )
         self.stroke_mid = nn.Sequential(
-            nn.Linear(256, 256),
+            nn.Linear(quant_size * quant_size * 8, quant_size * quant_size),
             nn.ReLU(),
-            nn.Linear(256, quant_size * quant_size),
+            nn.Linear(quant_size * quant_size, quant_size * quant_size),
             nn.LogSoftmax(1),
         )
         self.stroke_end = nn.Sequential(
-            nn.Linear(256, 256),
+            nn.Linear(quant_size * quant_size * 8, quant_size * quant_size),
             nn.ReLU(),
-            nn.Linear(256, quant_size * quant_size),
+            nn.Linear(quant_size * quant_size, quant_size * quant_size),
             nn.LogSoftmax(1),
         )
 
@@ -320,7 +313,7 @@ def disc_actions_to_cont_actions(
 def main():
     orig_img_size = 256
     img_size = 64
-    quant_size = 32
+    quant_size = 16
 
     # Argument parsing
     parser = ArgumentParser()

@@ -123,7 +123,7 @@ impl TrainingContext {
                 rollout_buffer: RolloutBuffer::new(
                     &[7, 64, 64],
                     &[&[1], &[1], &[1]],
-                    &[&[32 * 32], &[32 * 32], &[2]],
+                    &[&[16 * 16], &[16 * 16], &[2]],
                     tch::Kind::Int,
                     envs_per_worker,
                     num_steps as u32,
@@ -446,7 +446,7 @@ fn sample_model(p_net: &tch::CModule, obs: &Tensor) -> (Vec<u32>, Vec<u32>, Vec<
 /// Converts discrete actions to strokes.
 fn discs_to_strokes(action_mid: &[u32], action_end: &[u32]) -> Tensor {
     let mut actions_cont = Vec::new();
-    let quant_size = 32; // TODO: Pass this in as an argument
+    let quant_size = 16; // TODO: Pass this in as an argument
     for (&mid_index, end_index) in action_mid.iter().zip(action_end) {
         let mid_y = mid_index / quant_size;
         let mid_x = mid_index - mid_y * quant_size;
