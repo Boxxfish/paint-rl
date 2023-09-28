@@ -115,13 +115,13 @@ impl SimCanvasEnv {
         self.last_pen_down = pen_down;
 
         // Interpolate reward with L1 distance to ground truth
-        let scaled = self.scaled_canvas();
-        let ground_truth_l1 = (&self.ground_truth_img - scaled)
-            .abs()
-            .sum(tch::Kind::Float)
-            .double_value(&[]) as f32;
-        reward += -(ground_truth_l1 - self.last_ground_truth_l1) * 0.003;
-        self.last_ground_truth_l1 = ground_truth_l1;
+        // let scaled = self.scaled_canvas();
+        // let ground_truth_l1 = (&self.ground_truth_img - scaled)
+        //     .abs()
+        //     .sum(tch::Kind::Float)
+        //     .double_value(&[]) as f32;
+        // reward += -(ground_truth_l1 - self.last_ground_truth_l1) * 0.003;
+        // self.last_ground_truth_l1 = ground_truth_l1;
 
         let scale_ratio = self.scaled_size as f32 / self.sim_canvas.options.canvas_size as f32;
         let pos_channel = self.gen_pos_channel(

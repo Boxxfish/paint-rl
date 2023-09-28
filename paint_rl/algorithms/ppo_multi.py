@@ -34,7 +34,7 @@ def train_ppo(
         adjusting weights.
         use_masks: If True, masks are passed to the model.
     """
-    p_net.train()
+    # p_net.train() # Removed so batchnorm stops
     v_net_frozen = copy.deepcopy(v_net)
     v_net.train()
     if device.type != "cpu":

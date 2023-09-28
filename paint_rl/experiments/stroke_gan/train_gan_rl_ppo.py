@@ -50,7 +50,7 @@ epsilon = 0.2  # Epsilon for importance sample clipping.
 max_eval_steps = 300  # Number of eval runs to average over.
 eval_steps = 4  # Max number of steps to take during each eval run.
 v_lr = 0.001  # Learning rate of the value net.
-p_lr = 0.0000003 # Learning rate of the policy net.
+p_lr = 0.000003 # Learning rate of the policy net.
 d_lr = 0.0003  # Learning rate of the discriminator.
 gen_steps = 1  # Number of generator steps per iteration.
 disc_steps = 1  # Number of discriminator steps per iteration.
@@ -59,7 +59,7 @@ disc_batch_size = 64  # Batch size for the discriminator.
 stroke_width = 4
 canvas_size = 256
 quant_size = 16
-entropy_coeff = 0.001
+entropy_coeff = 0.003
 num_workers = 8
 warmup_steps = 0
 device = torch.device("cuda")  # Device to use during training.
@@ -497,7 +497,7 @@ for step in tqdm(range(iterations), position=0):
         ds_x_generated = torch.clip(ds_x_generated + noise, 0.0, 1.0)
         d_crit = nn.BCELoss()
         num_batches = disc_ds_size // (2 * disc_batch_size)
-        d_net.train()
+        # d_net.train()
 
         for _ in tqdm(range(disc_steps), position=1):
             epoch_indices = torch.from_numpy(np.random.permutation(disc_ds_size // 2))

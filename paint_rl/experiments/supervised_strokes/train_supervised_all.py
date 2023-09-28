@@ -30,57 +30,63 @@ class ResBlock(nn.Module):
 class SharedNet(nn.Module):
     """
     Shared network that could potentially be used for downstream tasks.
-    Important: Do NOT reinitialize parameters! This erases the positional encoding.
     """
 
     def __init__(self, size: int):
         nn.Module.__init__(self)
         self.net = nn.Sequential(
-            nn.Conv2d(7 + 2, 32, 3, stride=2, padding=1),
+            nn.Conv2d(7, 16, 3, stride=2, padding=1),
             ResBlock(
                 nn.Sequential(
                     nn.ReLU(),
-                    nn.Conv2d(32, 32, 3, padding=1),
+                    nn.Conv2d(16, 16, 3, padding=1),
+                    nn.BatchNorm2d(16),
                     nn.ReLU(),
-                    nn.Conv2d(32, 32, 3, padding=1),
+                    nn.Conv2d(16, 16, 3, padding=1),
+                    nn.BatchNorm2d(16),
                     nn.ReLU(),
                 )
             ),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),
             ResBlock(
                 nn.Sequential(
                     nn.ReLU(),
-                    nn.Conv2d(64, 64, 5, padding=2),
+                    nn.Conv2d(16, 16, 3, padding=1),
+                    nn.BatchNorm2d(16),
                     nn.ReLU(),
-                    nn.Conv2d(64, 64, 5, padding=2),
+                    nn.Conv2d(16, 16, 3, padding=1),
+                    nn.BatchNorm2d(16),
                     nn.ReLU(),
                 )
             ),
-            nn.Conv2d(64, 64, 5, padding=2),
+            nn.Conv2d(16, 32, 3, stride=2, padding=1),
+            ResBlock(
+                nn.Sequential(
+                    nn.ReLU(),
+                    nn.Conv2d(32, 32, 5, padding=2),
+                    nn.BatchNorm2d(32),
+                    nn.ReLU(),
+                    nn.Conv2d(32, 32, 5, padding=2),
+                    nn.BatchNorm2d(32),
+                    nn.ReLU(),
+                )
+            ),
+            nn.Conv2d(32, 64, 5, padding=2),
             ResBlock(
                 nn.Sequential(
                     nn.ReLU(),
                     nn.Conv2d(64, 64, 7, padding=3),
+                    nn.BatchNorm2d(64),
                     nn.ReLU(),
                     nn.Conv2d(64, 64, 7, padding=3),
+                    nn.BatchNorm2d(64),
                     nn.ReLU(),
                 )
             ),
         )
         self.downscale = nn.Conv2d(64, 8, 1)
         self.flatten = nn.Flatten()
-        # Pos encoding
-        w = torch.arange(0, size).unsqueeze(0).repeat([size, 1])
-        h = torch.arange(0, size).unsqueeze(0).repeat([size, 1]).T
-        self.pos = nn.Parameter(
-            torch.stack([w.detach(), h.detach()]).unsqueeze(0) / size,
-            requires_grad=False,
-        )
 
     def forward(self, x):
-        batch_size = x.shape[0]
-        pos_enc = self.pos.repeat([batch_size, 1, 1, 1])
-        x = torch.cat([x, pos_enc], dim=1)
         x = self.net(x)
         x = self.downscale(x)
         x = self.flatten(x)
@@ -89,7 +95,6 @@ class SharedNet(nn.Module):
     def set_frozen(self, frozen: bool):
         for param in self.parameters():
             param.requires_grad = not frozen
-        self.pos.requires_grad = False
 
 
 class StrokeNet(nn.Module):
