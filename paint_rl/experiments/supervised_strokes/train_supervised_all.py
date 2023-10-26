@@ -16,6 +16,7 @@ from paint_rl import conf
 from paint_rl.experiments.stroke_gan.ref_stroke_env import RefStrokeEnv
 from matplotlib import pyplot as plt  # type: ignore
 from paint_rl.experiments.supervised_strokes.gen_supervised import gen_curve_points
+from paint_rl.experiments.supervised_strokes.hourglass import Hourglass
 
 
 class ResBlock(nn.Module):
@@ -35,55 +36,75 @@ class SharedNet(nn.Module):
     def __init__(self, size: int):
         nn.Module.__init__(self)
         self.net = nn.Sequential(
-            nn.Conv2d(7, 16, 3, stride=2, padding=1),
+            nn.Conv2d(7, 32, 3, stride=2, padding=1),
             ResBlock(
                 nn.Sequential(
                     nn.ReLU(),
-                    nn.Conv2d(16, 16, 3, padding=1),
-                    nn.BatchNorm2d(16),
-                    nn.ReLU(),
-                    nn.Conv2d(16, 16, 3, padding=1),
-                    nn.BatchNorm2d(16),
-                    nn.ReLU(),
-                )
-            ),
-            ResBlock(
-                nn.Sequential(
-                    nn.ReLU(),
-                    nn.Conv2d(16, 16, 3, padding=1),
-                    nn.BatchNorm2d(16),
-                    nn.ReLU(),
-                    nn.Conv2d(16, 16, 3, padding=1),
-                    nn.BatchNorm2d(16),
-                    nn.ReLU(),
-                )
-            ),
-            nn.Conv2d(16, 32, 3, stride=2, padding=1),
-            ResBlock(
-                nn.Sequential(
-                    nn.ReLU(),
-                    nn.Conv2d(32, 32, 5, padding=2),
-                    nn.BatchNorm2d(32),
-                    nn.ReLU(),
-                    nn.Conv2d(32, 32, 5, padding=2),
+                    nn.Conv2d(32, 32, 3, padding=1),
                     nn.BatchNorm2d(32),
                     nn.ReLU(),
                 )
             ),
-            nn.Conv2d(32, 64, 5, padding=2),
+            nn.Conv2d(32, 32, 3, stride=2, padding=1),
             ResBlock(
                 nn.Sequential(
                     nn.ReLU(),
-                    nn.Conv2d(64, 64, 7, padding=3),
-                    nn.BatchNorm2d(64),
-                    nn.ReLU(),
-                    nn.Conv2d(64, 64, 7, padding=3),
-                    nn.BatchNorm2d(64),
+                    nn.Conv2d(32, 32, 3, padding=1),
+                    nn.BatchNorm2d(32),
                     nn.ReLU(),
                 )
             ),
+            # ResBlock(
+            #     nn.Sequential(
+            #         nn.ReLU(),
+            #         nn.Conv2d(32, 32, 3, padding=1),
+            #         nn.BatchNorm2d(32),
+            #         nn.ReLU(),
+            #         nn.Conv2d(32, 32, 3, padding=1),
+            #         nn.BatchNorm2d(32),
+            #         nn.ReLU(),
+            #     )
+            # ),
+            # ResBlock(
+            #     nn.Sequential(
+            #         nn.ReLU(),
+            #         nn.Conv2d(16, 16, 3, padding=1),
+            #         nn.BatchNorm2d(16),
+            #         nn.ReLU(),
+            #         nn.Conv2d(16, 16, 3, padding=1),
+            #         nn.BatchNorm2d(16),
+            #         nn.ReLU(),
+            #     )
+            # ),
+            # nn.Conv2d(16, 32, 3, stride=2, padding=1),
+            # ResBlock(
+            #     nn.Sequential(
+            #         nn.ReLU(),
+            #         nn.Conv2d(32, 32, 5, padding=2),
+            #         nn.BatchNorm2d(32),
+            #         nn.ReLU(),
+            #         nn.Conv2d(32, 32, 5, padding=2),
+            #         nn.BatchNorm2d(32),
+            #         nn.ReLU(),
+            #     )
+            # ),
+            # nn.Conv2d(32, 64, 5, padding=2),
+            # ResBlock(
+            #     nn.Sequential(
+            #         nn.ReLU(),
+            #         nn.Conv2d(64, 64, 7, padding=3),
+            #         nn.BatchNorm2d(64),
+            #         nn.ReLU(),
+            #         nn.Conv2d(64, 64, 7, padding=3),
+            #         nn.BatchNorm2d(64),
+            #         nn.ReLU(),
+            #     )
+            # ),
+            Hourglass(1, 32),
+            nn.Conv2d(32, 32, 1),
+            nn.ReLU(),
         )
-        self.downscale = nn.Conv2d(64, 8, 1)
+        self.downscale = nn.Conv2d(32, 8, 1)
         self.flatten = nn.Flatten()
 
     def forward(self, x):
@@ -442,7 +463,7 @@ def main():
         net.load_state_dict(torch.load("temp/stroke_net.pt"))
     opt = torch.optim.Adam(net.parameters(), lr=0.0001)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt, "min", min_lr=0.00001, factor=1 / 3, patience=30
+        opt, "min", min_lr=0.00003, factor=1 / 3, patience=30
     )
     batch_size = 512
     train_x = train_x.float()
@@ -460,6 +481,7 @@ def main():
         indices = torch.from_numpy(
             np.random.choice(train_size, train_size, replace=False)
         )
+        opt.zero_grad()
         for i in range(num_batches):
             batch_indices = indices[i * batch_size : (i + 1) * batch_size]
             batch_x = train_x[batch_indices].cuda()
@@ -472,13 +494,17 @@ def main():
             stroke_end_loss = disc_crit(stroke_end, batch_end.type(torch.long))
             pen_down_loss = disc_crit(pen_down, batch_pen_down.type(torch.long))
             loss = stroke_mid_loss + stroke_end_loss + pen_down_loss
-            opt.zero_grad()
             loss.backward()
-            opt.step()
             mean_loss += loss.item()
             mean_mid_loss += stroke_mid_loss
             mean_end_loss += stroke_end_loss
             mean_down_loss += pen_down_loss
+
+            if i % 2 == 0:
+                opt.step()
+                opt.zero_grad()
+
+        opt.step()
         mean_loss /= num_batches
         mean_mid_loss /= num_batches
         mean_end_loss /= num_batches
@@ -486,6 +512,7 @@ def main():
 
         # Evaluate
         with torch.no_grad():
+            net.eval()
             valid_mid, valid_end, valid_down = net(valid_batch_x)
             valid_loss_mid = disc_crit(
                 valid_mid, valid_batch_stroke_mid.type(torch.long)
@@ -511,8 +538,9 @@ def main():
                     "lr": opt.param_groups[0]["lr"],
                 }
             )
+            net.train()
 
-        if (j + 1) % 10 == 0:
+        if (j + 1) % 20 == 0:
             del train_stroke_mid, train_stroke_end, train_pen_down
             (
                 train_x,

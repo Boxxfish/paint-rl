@@ -54,7 +54,7 @@ p_lr = 0.000003 # Learning rate of the policy net.
 d_lr = 0.0003  # Learning rate of the discriminator.
 gen_steps = 1  # Number of generator steps per iteration.
 disc_steps = 1  # Number of discriminator steps per iteration.
-disc_ds_size = 256  # Size of the discriminator dataset. Half will be generated.
+disc_ds_size = 512  # Size of the discriminator dataset. Half will be generated.
 disc_batch_size = 64  # Batch size for the discriminator.
 stroke_width = 4
 canvas_size = 256
@@ -85,6 +85,8 @@ class SharedNet(nn.Module):
         self.net = nn.Sequential(
             nn.Conv2d(7 + 2, 128, 3, 2),
             nn.ReLU(),
+            nn.Conv2d(128, 128, 3, 2),
+            nn.ReLU(),
             nn.Conv2d(128, 256, 3, 2),
             nn.ReLU(),
             nn.Conv2d(256, self.out_size, 3, 2),
@@ -103,7 +105,7 @@ class SharedNet(nn.Module):
         pos_enc = self.pos.repeat([batch_size, 1, 1, 1])
         x = torch.cat([x, pos_enc], dim=1)
         x = self.net(x)
-        x = torch.max(torch.max(x, 3).values, 2).values
+        x = torch.amax(torch.amax(x, 3), 2)
         x = self.net2(x)
         return x
 
@@ -186,7 +188,7 @@ class Discriminator(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.net(x)
-        x = torch.max(torch.max(x, 3).values, 2).values
+        x = torch.amax(torch.amax(x, 3), 2)
         x = self.net2(x)
         return x
 
@@ -224,7 +226,7 @@ test_env = RefStrokeEnv(
     stroke_imgs,
     d_net,
     stroke_width=stroke_width,
-    render_mode="human",
+    # render_mode="human",
     max_strokes=max_strokes,
 )
 
@@ -447,6 +449,10 @@ assert isinstance(buffers[0], RolloutBuffer)
 assert isinstance(buffers[1], ActionRolloutBuffer)
 assert isinstance(buffers[2], ActionRolloutBuffer)
 
+generated_queue = training_context.gen_imgs(
+    disc_ds_size // 2
+)
+
 for step in tqdm(range(iterations), position=0):
     if step == warmup_steps:
         p_net.shared.set_frozen(False)
@@ -461,9 +467,12 @@ for step in tqdm(range(iterations), position=0):
     avg_disc_loss_real = 0.0
     avg_disc_loss_generated = 0.0
     if step >= warmup_steps:
+        queue_parts = 8
         generated = training_context.gen_imgs(
-            disc_ds_size // 2
+            disc_ds_size // (queue_parts * 2)
         )  # Shape: (disc_ds_size / 2, 4 img_size, img_size)
+        generated_queue_idx = step % queue_parts
+        generated_queue[generated_queue_idx * (generated_queue.shape[0] // queue_parts):(generated_queue_idx + 1) * (generated_queue.shape[0] // queue_parts)] = generated
 
         # Training the discriminator
         ds_indices = np.random.permutation(len(ref_imgs))[: disc_ds_size // 2].tolist()
@@ -478,7 +487,7 @@ for step in tqdm(range(iterations), position=0):
         ).float()  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
         ds_y_real_batch = torch.from_numpy(np.ones([disc_batch_size])).float().to(device)
         ds_x_generated = torch.from_numpy(
-            generated
+            generated_queue
         ).float()  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
         ds_y_generated_batch = torch.zeros(
             [disc_batch_size], dtype=torch.float, device=device
@@ -497,7 +506,7 @@ for step in tqdm(range(iterations), position=0):
         ds_x_generated = torch.clip(ds_x_generated + noise, 0.0, 1.0)
         d_crit = nn.BCELoss()
         num_batches = disc_ds_size // (2 * disc_batch_size)
-        # d_net.train()
+        d_net.train()
 
         for _ in tqdm(range(disc_steps), position=1):
             epoch_indices = torch.from_numpy(np.random.permutation(disc_ds_size // 2))
