@@ -1,5 +1,5 @@
 import random
-from typing import Any, List, Optional
+from typing import *
 import gymnasium as gym
 import numpy as np
 from PIL import Image, ImageDraw  # type: ignore

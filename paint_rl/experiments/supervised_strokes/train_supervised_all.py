@@ -219,7 +219,7 @@ def quantize_point(point: np.ndarray, quant_size: int) -> int:
 def load_random_ds(
     valid_size: int, size: int, img_size: int, orig_img_size: int, quant_size: int
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    indices = list(range(valid_size, 10_000))
+    indices = list(range(valid_size, 2_800))
     random.shuffle(indices)
     ds_x: list[np.ndarray] = []
     stroke_mid: list[np.ndarray] = []
@@ -384,7 +384,7 @@ def main():
     valid_stroke_end_actions = []
     valid_pen_down_actions = []
     valid_size = 8
-    train_size = 30_000
+    train_size = 2_800
     print("Loading data.")
     for i in tqdm(range(1500)):
         if i >= valid_size:

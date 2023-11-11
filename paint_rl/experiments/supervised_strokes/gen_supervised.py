@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import bezier  # type: ignore
+import splines  # type: ignore
 import numpy as np
 from PIL import Image, ImageDraw  # type: ignore
 from tqdm import tqdm
@@ -42,17 +42,17 @@ def rand_point(
 
 
 def gen_curve_points(
-    p1: Tuple[int, int], p2: Tuple[int, int], p3: Tuple[int, int]
-) -> List[Tuple[int, int]]:
+    p1: tuple[int, int], p2: tuple[int, int], p3: tuple[int, int]
+) -> list[tuple[int, int]]:
     points = []
-    nodes = np.swapaxes(np.array([p1, p2, p3]), 0, 1)
-    curve = bezier.Curve(nodes, 2)
+    nodes = [p1, p2, p3]
+    curve = splines.CatmullRom(nodes, [0, 1, 2, 3], endconditions="closed")
     num_evals = 10
     for i in range(num_evals):
-        pct = i / num_evals
+        pct = 2 * (i / num_evals)
         point = curve.evaluate(pct)
         points.append((point[0], point[1]))
-    point = curve.evaluate(1.0)
+    point = curve.evaluate(2.0)
     points.append((point[0], point[1]))
     return points
 

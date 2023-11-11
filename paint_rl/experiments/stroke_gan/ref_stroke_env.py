@@ -114,7 +114,6 @@ class RefStrokeEnv(gym.Env):
             new_stroke = np.array(scaled_canvas).transpose(2, 0, 1)[1] / 255.0
             assert isinstance(new_stroke, np.ndarray)
             self.canvas = new_stroke
-
         self.counter += 1
         trunc = False
 

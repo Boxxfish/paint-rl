@@ -2090,6 +2090,21 @@ files = [
 ]
 
 [[package]]
+name = "splines"
+version = "0.3.1"
+description = "Splines in Euclidean Space and Beyond"
+category = "main"
+optional = false
+python-versions = ">=3.7"
+files = [
+    {file = "splines-0.3.1-py3-none-any.whl", hash = "sha256:52945e8547257a545ce9caf3d628ea6f5552c1c560d6dd6857806405e023ff11"},
+    {file = "splines-0.3.1.tar.gz", hash = "sha256:8a5cf09709254b7872e8bbbfa03aad1dcfa19ec7a49575f3de987c3be17e8a7a"},
+]
+
+[package.dependencies]
+NumPy = "*"
+
+[[package]]
 name = "sympy"
 version = "1.12"
 description = "Computer algebra system (CAS) in Python"
@@ -2377,4 +2392,4 @@ testing = ["big-O", "flake8 (<5)", "jaraco.functools", "jaraco.itertools", "more
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.9"
-content-hash = "8637b3409e3a32a066069dd72a02501ee940c77c6d819f4dd136d84c140aa447"
+content-hash = "979f002a481e911fb2781f69a84d632bd73e33a179a956d30497cf4ed633f943"

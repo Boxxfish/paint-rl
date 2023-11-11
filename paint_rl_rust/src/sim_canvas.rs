@@ -1,6 +1,7 @@
 use num_traits::{FromPrimitive, ToPrimitive};
 use rand::Rng;
 use tiny_skia::*;
+use splines;
 
 /// A digital painting simulator.
 pub struct SimCanvas {
@@ -49,8 +50,8 @@ impl SimCanvas {
             ..Default::default()
         };
         let r = brush.color_r.value(brush_params);
-        let g = brush.color_r.value(brush_params);
-        let b = brush.color_r.value(brush_params);
+        let g = brush.color_g.value(brush_params);
+        let b = brush.color_b.value(brush_params);
         paint.set_color(Color::from_rgba(r, g, b, 1.0).unwrap());
         let stroke = Stroke {
             width: brush.brush_diameter.value(brush_params) as f32,
@@ -60,7 +61,21 @@ impl SimCanvas {
         let path = {
             let mut pb = PathBuilder::new();
             pb.move_to(self.last_x as f32, self.last_y as f32);
-            pb.quad_to(mid_x as f32, mid_y as f32, end_x as f32, end_y as f32);
+            let start_x = splines::Key::new(0.0, self.last_x as f32, splines::Interpolation::CatmullRom);
+            let mid_x = splines::Key::new(0.5, mid_x as f32, splines::Interpolation::CatmullRom);
+            let end_x = splines::Key::new(1.0, end_x as f32, splines::Interpolation::CatmullRom);
+            let curve_x = splines::Spline::from_vec(vec![start_x, start_x, mid_x, end_x, end_x]);
+            let start_y = splines::Key::new(0.0, self.last_y as f32, splines::Interpolation::CatmullRom);
+            let mid_y = splines::Key::new(0.5, mid_y as f32, splines::Interpolation::CatmullRom);
+            let end_y = splines::Key::new(1.0, end_y as f32, splines::Interpolation::CatmullRom);
+            let curve_y = splines::Spline::from_vec(vec![start_y, start_y, mid_y, end_y, end_y]);
+            pb.line_to(self.last_x as f32, self.last_y as f32);
+            for i in 0..10 {
+                let pct = i as f32 / 10.0;
+                let sample_x = curve_x.sample(pct).unwrap();
+                let sample_y = curve_y.sample(pct).unwrap();
+                pb.line_to(sample_x, sample_y);
+            }
             pb.finish().unwrap()
         };
         self.pixmap

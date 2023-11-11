@@ -59,7 +59,7 @@ disc_batch_size = 64  # Batch size for the discriminator.
 stroke_width = 4
 canvas_size = 256
 quant_size = 16
-entropy_coeff = 0.003
+entropy_coeff = 0.0003
 num_workers = 8
 warmup_steps = 0
 device = torch.device("cuda")  # Device to use during training.
@@ -83,13 +83,13 @@ class SharedNet(nn.Module):
         nn.Module.__init__(self)
         self.out_size = 512
         self.net = nn.Sequential(
-            nn.Conv2d(7 + 2, 128, 3, 2),
+            nn.Conv2d(7 + 2, 64, 3, 2),
             nn.ReLU(),
-            nn.Conv2d(128, 128, 3, 2),
+            nn.Conv2d(64, 64, 3, 2),
             nn.ReLU(),
-            nn.Conv2d(128, 256, 3, 2),
+            nn.Conv2d(64, 128, 3, 2),
             nn.ReLU(),
-            nn.Conv2d(256, self.out_size, 3, 2),
+            nn.Conv2d(128, self.out_size, 3, 2),
             nn.ReLU(),
         )
         self.net2 = nn.Sequential(nn.Linear(self.out_size, self.out_size), nn.ReLU())
@@ -195,7 +195,8 @@ class Discriminator(nn.Module):
 
 # Load dataset
 img_size = IMG_SIZE
-ds_path = Path("temp/sketch_outputs")
+TRAINING_SET = "temp/shapes"
+ds_path = Path(TRAINING_SET)
 ref_imgs = []
 stroke_imgs = []
 print("Loading dataset...")
@@ -218,7 +219,7 @@ d_net = Discriminator()
 d_net.eval()
 d_opt = torch.optim.Adam(d_net.parameters(), lr=d_lr, betas=(0.5, 0.999))
 
-max_strokes = 50
+max_strokes = 4#32
 test_env = RefStrokeEnv(
     canvas_size,
     img_size,
@@ -273,19 +274,19 @@ if args.eval:
                 )
 
                 # Uncomment to show action probability maps
-                # mid_layer = action_probs_discs[0].exp().reshape(16, 16)
-                # end_layer = action_probs_discs[1].exp().reshape(16, 16)
-                # removal_indices = list(range(0, 64, 4)) + list(range(1, 64, 4)) + list(range(2, 64, 4))
-                # img = (
-                #     np.delete(
-                #         np.delete(eval_obs[-3:], removal_indices, axis=1),
-                #         removal_indices,
-                #         axis=2,
-                #     )
-                #     / 2.0
-                # ) + np.stack([mid_layer, end_layer, np.zeros([16, 16])])
-                # plt.imshow(img.permute(1, 2, 0))
-                # plt.show()
+                mid_layer = action_probs_discs[0].exp().reshape(16, 16)
+                end_layer = action_probs_discs[1].exp().reshape(16, 16)
+                removal_indices = list(range(0, 64, 4)) + list(range(1, 64, 4)) + list(range(2, 64, 4))
+                img = (
+                    np.delete(
+                        np.delete(eval_obs[-3:], removal_indices, axis=1),
+                        removal_indices,
+                        axis=2,
+                    )
+                    / 2.0
+                ) + np.stack([mid_layer, end_layer, np.zeros([16, 16])])
+                plt.imshow(img.permute(1, 2, 0))
+                plt.show()
                 
                 test_env.render()
                 eval_obs = torch.Tensor(obs_)
@@ -311,7 +312,7 @@ if args.test:
         None,
         stroke_width=stroke_width,
         render_mode="human",
-        max_strokes=100,
+        max_strokes=max_strokes,
     )
     p_net = PolicyNet(IMG_SIZE, quant_size)
     p_net.load_state_dict(torch.load("temp/p_net.pt"))
@@ -404,7 +405,7 @@ traced.save(d_net_path)
 training_context = TrainingContext(
     img_size,
     canvas_size,
-    "temp/sketch_outputs",
+    TRAINING_SET,
     p_net_path,
     d_net_path,
     max_strokes,
