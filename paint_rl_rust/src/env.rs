@@ -88,12 +88,12 @@ impl SimCanvasEnv {
         let mut reward = 0.0;
 
         // Penalize not drawing far enough
-        let last_pos = self.sim_canvas.last_brush_pos();
-        if (((last_pos.0 - end_point.0).pow(2) + (last_pos.1 - end_point.1).pow(2)) as f32).sqrt()
-            <= 4.0
-        {
-            reward += -0.2;
-        }
+        // let last_pos = self.sim_canvas.last_brush_pos();
+        // if (((last_pos.0 - end_point.0).pow(2) + (last_pos.1 - end_point.1).pow(2)) as f32).sqrt()
+        //     <= 4.0
+        // {
+        //     reward += -0.2;
+        // }
 
         // Draw on canvas
         let pen_down = disc_action == 1;
@@ -120,7 +120,7 @@ impl SimCanvasEnv {
         //     .abs()
         //     .sum(tch::Kind::Float)
         //     .double_value(&[]) as f32;
-        // reward += -(ground_truth_l1 - self.last_ground_truth_l1) * 0.003;
+        // reward += -(ground_truth_l1 - self.last_ground_truth_l1) * 0.01;
         // self.last_ground_truth_l1 = ground_truth_l1;
 
         let scale_ratio = self.scaled_size as f32 / self.sim_canvas.options.canvas_size as f32;
