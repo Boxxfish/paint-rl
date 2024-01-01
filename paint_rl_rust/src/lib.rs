@@ -8,11 +8,13 @@ use numpy::{IntoPyArray, PyArray};
 use pyo3::prelude::*;
 use pyo3_tch::PyTensor;
 use rand::{seq::SliceRandom, Rng};
-use tch::Tensor;
+use tch::{nn::Module, Tensor};
+use tree_search::TsNode;
 use weighted_rand::builder::{NewBuilder, WalkerTableBuilder};
 
 pub mod env;
 pub mod sim_canvas;
+pub mod tree_search;
 
 #[pyclass]
 pub struct TrainingContext {
@@ -21,6 +23,7 @@ pub struct TrainingContext {
     ground_truth_imgs: Arc<RwLock<Vec<ndarray::Array2<f32>>>>,
     reward_model_path: String,
     p_net_path: String,
+    v_net_path: String,
     num_workers: usize,
     num_steps: usize,
     num_envs: usize,
@@ -37,6 +40,7 @@ impl TrainingContext {
         canvas_size: u32,
         ref_img_path: &str,
         p_net_path: &str,
+        v_net_path: &str,
         reward_model_path: &str,
         max_strokes: u32,
         num_envs: u32,
@@ -135,6 +139,7 @@ impl TrainingContext {
         Self {
             ref_imgs,
             p_net_path: p_net_path.into(),
+            v_net_path: v_net_path.into(),
             reward_model_path: reward_model_path.into(),
             num_workers,
             w_ctxs,
@@ -147,12 +152,90 @@ impl TrainingContext {
         }
     }
 
-    /// Generates a set of images.
-    pub fn gen_imgs(
-        &mut self,
+    /// Generates a set of images with tree search.
+    pub fn gen_imgs_ts(
+        &self,
         py: Python<'_>,
         num_imgs: usize,
     ) -> Py<PyArray<f32, Dim<[usize; 4]>>> {
+        let _guard = tch::no_grad_guard();
+
+        let p_net = Arc::new(RwLock::new(tch::CModule::load(&self.p_net_path).unwrap()));
+        let v_net = Arc::new(RwLock::new(tch::CModule::load(&self.v_net_path).unwrap()));
+        let mut img_arr: Vec<ndarray::Array3<f32>> = Vec::with_capacity(num_imgs);
+        let reward_model = Arc::new(RwLock::new(
+            tch::CModule::load(&self.reward_model_path).unwrap(),
+        ));
+        let bar = ProgressBar::new(num_imgs as u64);
+
+        let obs_select = Tensor::from_slice(&[4, 5, 6, 2]);
+        for _ in 0..num_imgs {
+            let mut ts_root = TsNode::new(0.);
+
+            // Perform rollouts
+            for _ in 0..100 {
+                let mut env = SimCanvasEnv::new(
+                    self.canvas_size,
+                    self.img_size,
+                    4,
+                    &self.ref_imgs,
+                    &self.ground_truth_imgs,
+                    self.max_strokes,
+                );
+                let obs = env.reset();
+                ts_root.expand(
+                    0.,
+                    &obs,
+                    &mut env,
+                    &p_net.read().unwrap(),
+                    &v_net.read().unwrap(),
+                    &reward_model.read().unwrap(),
+                );
+            }
+
+            // Perform best sequence of actions on a fresh canvas
+            let mut env = SimCanvasEnv::new(
+                self.canvas_size,
+                self.img_size,
+                4,
+                &self.ref_imgs,
+                &self.ground_truth_imgs,
+                self.max_strokes,
+            );
+            let actions = ts_root.get_best_actions();
+            let mut obs = env.reset();
+            for action in actions {
+                let cont_action = Tensor::from_slice(&[
+                    action.0 as f32,
+                    action.1 as f32,
+                    action.2 as f32,
+                    action.3 as f32,
+                ]);
+                obs = env.step(&cont_action, action.4 as u32).0;
+            }
+            let data_item: ndarray::ArrayD<f32> = obs
+                .index_select(0, &obs_select)
+                .as_ref()
+                .try_into()
+                .unwrap();
+            img_arr.push(data_item.into_dimensionality().unwrap());
+            bar.inc(1);
+        }
+
+        bar.finish();
+
+        // Stack images
+        ndarray::stack(
+            ndarray::Axis(0),
+            &img_arr.iter().map(|x| x.view()).collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .into_pyarray(py)
+        .to_owned()
+    }
+
+    /// Generates a set of images.
+    pub fn gen_imgs(&self, py: Python<'_>, num_imgs: usize) -> Py<PyArray<f32, Dim<[usize; 4]>>> {
         let _guard = tch::no_grad_guard();
 
         let p_net = Arc::new(RwLock::new(tch::CModule::load(&self.p_net_path).unwrap()));
@@ -422,11 +505,20 @@ fn sample(log_probs: &Tensor) -> Vec<u32> {
 /// Returns action probabilities from a model.
 fn get_act_probs(p_net: &tch::CModule, obs: &Tensor) -> (Tensor, Tensor, Tensor) {
     let tch::IValue::Tuple(results) = p_net
-    .forward_is(&[tch::IValue::Tensor(obs.copy())])
-    .unwrap() else {panic!("Invalid output.")};
-    let tch::IValue::Tensor(action_probs_mid) = &results[0] else {panic!("Invalid output.")};
-    let tch::IValue::Tensor(action_probs_end) = &results[1] else {panic!("Invalid output.")};
-    let tch::IValue::Tensor(action_probs_down) = &results[2] else {panic!("Invalid output.")};
+        .forward_is(&[tch::IValue::Tensor(obs.copy())])
+        .unwrap()
+    else {
+        panic!("Invalid output.")
+    };
+    let tch::IValue::Tensor(action_probs_mid) = &results[0] else {
+        panic!("Invalid output.")
+    };
+    let tch::IValue::Tensor(action_probs_end) = &results[1] else {
+        panic!("Invalid output.")
+    };
+    let tch::IValue::Tensor(action_probs_down) = &results[2] else {
+        panic!("Invalid output.")
+    };
     (
         action_probs_mid.copy(),
         action_probs_end.copy(),

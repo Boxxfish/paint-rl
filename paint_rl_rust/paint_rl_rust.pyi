@@ -9,6 +9,7 @@ class TrainingContext:
         canvas_size: int,
         ref_img_path: str,
         p_net_path: str,
+        v_net_path: str,
         reward_model_path: str,
         num_envs: int,
         num_workers: int,
@@ -16,6 +17,7 @@ class TrainingContext:
         max_strokes: Optional[int] = None,
     ): ...
     def gen_imgs(self, num_imgs: int) -> np.ndarray: ...
+    def gen_imgs_ts(self, num_imgs: int) -> np.ndarray: ...
     def rollout(
         self,
     ) -> tuple[Tensor, list[Tensor], list[Tensor], Tensor, Tensor, Tensor]: ...

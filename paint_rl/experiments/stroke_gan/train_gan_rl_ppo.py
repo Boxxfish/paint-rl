@@ -42,16 +42,16 @@ _: Any
 num_envs = 32  # Number of environments to step through at once during sampling.
 train_steps = 128  # Number of steps to step through during sampling. Total # of samples is train_steps * num_envs.
 iterations = 1000  # Number of sample/train iterations.
-train_iters = 4  # Number of passes over the samples collected.
+train_iters = 2  # Number of passes over the samples collected.
 train_batch_size = 1024  # Minibatch size while training models.
 discount = 0.95  # Discount factor applied to rewards.
 lambda_ = 0.95  # Lambda for GAE.
 epsilon = 0.2  # Epsilon for importance sample clipping.
 max_eval_steps = 300  # Number of eval runs to average over.
 eval_steps = 4  # Max number of steps to take during each eval run.
-v_lr = 0.001  # Learning rate of the value net.
-p_lr = 0.000003 # Learning rate of the policy net.
-d_lr = 0.0003  # Learning rate of the discriminator.
+v_lr = 0.003  # Learning rate of the value net.
+p_lr = 0.0003  # Learning rate of the policy net.
+d_lr = 0.003  # Learning rate of the discriminator.
 gen_steps = 1  # Number of generator steps per iteration.
 disc_steps = 1  # Number of discriminator steps per iteration.
 disc_ds_size = 512  # Size of the discriminator dataset. Half will be generated.
@@ -59,7 +59,7 @@ disc_batch_size = 64  # Batch size for the discriminator.
 stroke_width = 4
 canvas_size = 256
 quant_size = 16
-entropy_coeff = 0.0003
+entropy_coeff = 0.003
 num_workers = 8
 warmup_steps = 0
 device = torch.device("cuda")  # Device to use during training.
@@ -79,34 +79,20 @@ class SharedNet(nn.Module):
     Takes in an image of 5 channels.
     """
 
-    def __init__(self, size: int):
+    def __init__(self):
         nn.Module.__init__(self)
-        self.out_size = 512
         self.net = nn.Sequential(
-            nn.Conv2d(7 + 2, 64, 3, 2),
+            nn.Conv2d(7, 32, 5, 2, padding=2),
             nn.ReLU(),
-            nn.Conv2d(64, 64, 3, 2),
+            nn.Conv2d(32, 32, 3, 2, padding=1),
             nn.ReLU(),
-            nn.Conv2d(64, 128, 3, 2),
+            nn.Conv2d(32, 32, 3, 2, padding=1),
             nn.ReLU(),
-            nn.Conv2d(128, self.out_size, 3, 2),
-            nn.ReLU(),
-        )
-        self.net2 = nn.Sequential(nn.Linear(self.out_size, self.out_size), nn.ReLU())
-        # Pos encoding
-        w = torch.arange(0, size).unsqueeze(0).repeat([size, 1])
-        h = torch.arange(0, size).unsqueeze(0).repeat([size, 1]).T
-        self.pos = nn.Parameter(
-            torch.stack([w, h]).unsqueeze(0) / size, requires_grad=False
+            nn.Flatten(),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size = x.shape[0]
-        pos_enc = self.pos.repeat([batch_size, 1, 1, 1])
-        x = torch.cat([x, pos_enc], dim=1)
         x = self.net(x)
-        x = torch.amax(torch.amax(x, 3), 2)
-        x = self.net2(x)
         return x
 
 
@@ -117,7 +103,7 @@ class ValueNet(nn.Module):
     ):
         nn.Module.__init__(self)
         self.shared_net = shared_net
-        self.v_layer2 = nn.Linear(shared_net.out_size, 256)
+        self.v_layer2 = nn.Linear(2048, 256)
         self.v_layer3 = nn.Linear(256, 1)
         self.relu = nn.ReLU()
 
@@ -128,36 +114,6 @@ class ValueNet(nn.Module):
         x = self.relu(x)
         x = self.v_layer3(x)
         return x
-
-
-# class PolicyNet(nn.Module):
-#     def __init__(
-#         self,
-#         action_count_cont: int,
-#         action_count_discrete: int,
-#         shared_net: SharedNet,
-#     ):
-#         nn.Module.__init__(self)
-#         self.shared_net = shared_net
-#         self.continuous = nn.Sequential(
-#             nn.Linear(shared_net.out_size, 64),
-#             nn.ReLU(),
-#             nn.Linear(64, action_count_cont),
-#             nn.Sigmoid(),
-#         )
-#         self.discrete = nn.Sequential(
-#             nn.Linear(shared_net.out_size, 64),
-#             nn.ReLU(),
-#             nn.Linear(64, action_count_discrete),
-#             nn.LogSoftmax(1),
-#         )
-#         self.relu = nn.ReLU()
-
-#     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-#         x = self.shared_net(input)
-#         cont = self.continuous(x)
-#         disc = self.discrete(x)
-#         return (cont, disc)
 
 
 class Discriminator(nn.Module):
@@ -177,25 +133,24 @@ class Discriminator(nn.Module):
             spectral_norm(nn.Conv2d(32, 64, 3, 2, padding=1)),
             nn.BatchNorm2d(64),
             nn.LeakyReLU(0.2),
-            spectral_norm(nn.Conv2d(64, 128, 3, 4, padding=1)),
-            nn.BatchNorm2d(128),
+            spectral_norm(nn.Conv2d(64, 64, 3, 4, padding=1)),
+            nn.BatchNorm2d(64),
             nn.LeakyReLU(0.2),
-        )
-        self.net2 = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(1024, 128),
+            nn.LeakyReLU(0.2),
             nn.Linear(128, 1),
             nn.Sigmoid(),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.net(x)
-        x = torch.amax(torch.amax(x, 3), 2)
-        x = self.net2(x)
         return x
 
 
 # Load dataset
 img_size = IMG_SIZE
-TRAINING_SET = "temp/shapes"
+TRAINING_SET = "temp/sketch_outputs"
 ds_path = Path(TRAINING_SET)
 ref_imgs = []
 stroke_imgs = []
@@ -219,7 +174,7 @@ d_net = Discriminator()
 d_net.eval()
 d_opt = torch.optim.Adam(d_net.parameters(), lr=d_lr, betas=(0.5, 0.999))
 
-max_strokes = 4#32
+max_strokes = 4  # 32
 test_env = RefStrokeEnv(
     canvas_size,
     img_size,
@@ -276,7 +231,11 @@ if args.eval:
                 # Uncomment to show action probability maps
                 mid_layer = action_probs_discs[0].exp().reshape(16, 16)
                 end_layer = action_probs_discs[1].exp().reshape(16, 16)
-                removal_indices = list(range(0, 64, 4)) + list(range(1, 64, 4)) + list(range(2, 64, 4))
+                removal_indices = (
+                    list(range(0, 64, 4))
+                    + list(range(1, 64, 4))
+                    + list(range(2, 64, 4))
+                )
                 img = (
                     np.delete(
                         np.delete(eval_obs[-3:], removal_indices, axis=1),
@@ -287,7 +246,7 @@ if args.eval:
                 ) + np.stack([mid_layer, end_layer, np.zeros([16, 16])])
                 plt.imshow(img.permute(1, 2, 0))
                 plt.show()
-                
+
                 test_env.render()
                 eval_obs = torch.Tensor(obs_)
                 steps_taken += 1
@@ -308,7 +267,7 @@ if args.test:
         canvas_size,
         img_size,
         [test_img],
-        [test_img.mean(0)], # No real ground truth here
+        [test_img.mean(0)],  # No real ground truth here
         None,
         stroke_width=stroke_width,
         render_mode="human",
@@ -378,15 +337,16 @@ assert isinstance(act_space.spaces[0], gym.spaces.Box)
 assert isinstance(act_space.spaces[1], gym.spaces.Discrete)
 action_count_cont = int(act_space.spaces[0].shape[0])
 action_count_discrete = int(act_space.spaces[1].n)
-v_net = ValueNet(SharedNet(img_size))
+v_net = ValueNet(SharedNet())
 p_net = PolicyNet(img_size, quant_size)
-p_net.load_state_dict(torch.load("temp/stroke_net.pt"))  # For loading from pretraining
-p_net.shared.set_frozen(True)
+# p_net.load_state_dict(torch.load("temp/stroke_net.pt"))  # For loading from pretraining
+# p_net.shared.set_frozen(True)
 v_opt = torch.optim.Adam(v_net.parameters(), lr=v_lr, betas=(0.5, 0.999))
 p_opt = torch.optim.Adam(p_net.parameters(), lr=p_lr, betas=(0.5, 0.999))
 
 # Initialize training context
 p_net_path = "temp/training/p_net.ptc"
+v_net_path = "temp/training/v_net.ptc"
 d_net_path = "temp/training/d_net.ptc"
 sample_input_p = torch.from_numpy(obs_space.sample()).unsqueeze(0)
 traced = torch.jit.trace(
@@ -394,6 +354,11 @@ traced = torch.jit.trace(
     (sample_input_p,),
 )
 traced.save(p_net_path)
+traced = torch.jit.trace(
+    v_net,
+    (sample_input_p,),
+)
+traced.save(v_net_path)
 
 sample_input_d = torch.zeros([1, 4, img_size, img_size])
 d_net.cpu()
@@ -407,6 +372,7 @@ training_context = TrainingContext(
     canvas_size,
     TRAINING_SET,
     p_net_path,
+    v_net_path,
     d_net_path,
     max_strokes,
     num_envs,
@@ -450,9 +416,7 @@ assert isinstance(buffers[0], RolloutBuffer)
 assert isinstance(buffers[1], ActionRolloutBuffer)
 assert isinstance(buffers[2], ActionRolloutBuffer)
 
-generated_queue = training_context.gen_imgs(
-    disc_ds_size // 2
-)
+generated_queue = training_context.gen_imgs(disc_ds_size // 2)
 
 for step in tqdm(range(iterations), position=0):
     if step == warmup_steps:
@@ -464,16 +428,25 @@ for step in tqdm(range(iterations), position=0):
         (sample_input_p,),
     )
     traced.save(p_net_path)
+    traced = torch.jit.trace(
+        v_net,
+        (sample_input_p,),
+    )
+    traced.save(v_net_path)
 
     avg_disc_loss_real = 0.0
     avg_disc_loss_generated = 0.0
     if step >= warmup_steps:
         queue_parts = 8
-        generated = training_context.gen_imgs(
+        generated = training_context.gen_imgs_ts(
             disc_ds_size // (queue_parts * 2)
         )  # Shape: (disc_ds_size / 2, 4 img_size, img_size)
         generated_queue_idx = step % queue_parts
-        generated_queue[generated_queue_idx * (generated_queue.shape[0] // queue_parts):(generated_queue_idx + 1) * (generated_queue.shape[0] // queue_parts)] = generated
+        generated_queue[
+            generated_queue_idx
+            * (generated_queue.shape[0] // queue_parts) : (generated_queue_idx + 1)
+            * (generated_queue.shape[0] // queue_parts)
+        ] = generated
 
         # Training the discriminator
         ds_indices = np.random.permutation(len(ref_imgs))[: disc_ds_size // 2].tolist()
@@ -486,7 +459,9 @@ for step in tqdm(range(iterations), position=0):
         ds_x_real = torch.from_numpy(
             np.concatenate([ds_refs, ground_truth], 1)
         ).float()  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
-        ds_y_real_batch = torch.from_numpy(np.ones([disc_batch_size])).float().to(device)
+        ds_y_real_batch = (
+            torch.from_numpy(np.ones([disc_batch_size])).float().to(device)
+        )
         ds_x_generated = torch.from_numpy(
             generated_queue
         ).float()  # Shape: (disc_ds_size / 2, 4, img_size, img_size)
