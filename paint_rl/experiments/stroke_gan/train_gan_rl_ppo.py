@@ -50,7 +50,7 @@ epsilon = 0.2  # Epsilon for importance sample clipping.
 max_eval_steps = 300  # Number of eval runs to average over.
 eval_steps = 4  # Max number of steps to take during each eval run.
 v_lr = 0.003  # Learning rate of the value net.
-p_lr = 0.0003  # Learning rate of the policy net.
+p_lr = 0.00001  # Learning rate of the policy net.
 d_lr = 0.003  # Learning rate of the discriminator.
 gen_steps = 1  # Number of generator steps per iteration.
 disc_steps = 1  # Number of discriminator steps per iteration.
@@ -339,7 +339,7 @@ action_count_cont = int(act_space.spaces[0].shape[0])
 action_count_discrete = int(act_space.spaces[1].n)
 v_net = ValueNet(SharedNet())
 p_net = PolicyNet(img_size, quant_size)
-# p_net.load_state_dict(torch.load("temp/stroke_net.pt"))  # For loading from pretraining
+p_net.load_state_dict(torch.load("temp/stroke_net.pt"))  # For loading from pretraining
 # p_net.shared.set_frozen(True)
 v_opt = torch.optim.Adam(v_net.parameters(), lr=v_lr, betas=(0.5, 0.999))
 p_opt = torch.optim.Adam(p_net.parameters(), lr=p_lr, betas=(0.5, 0.999))
